@@ -23,6 +23,7 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
   """Returns tuned Brax PPO config for the given environment."""
   env_config = locomotion.get_default_config(env_name)
 
+  # --- Base RL config, used by default unless overridden below ---
   rl_config = config_dict.create(
       num_timesteps=100_000_000,
       num_evals=10,
@@ -46,6 +47,8 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
           value_obs_key="state",
       ),
   )
+
+  # --- Specializations for different environments ---
 
   if env_name in ("Go1JoystickFlatTerrain", "Go1JoystickRoughTerrain"):
     rl_config.num_timesteps = 200_000_000
@@ -88,6 +91,40 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
         policy_obs_key="state",
         value_obs_key="privileged_state",
     )
+
+  # ==============================================================================
+  # START OF PUPPER CONFIGURATION
+  # ==============================================================================
+
+  elif env_name in ("PupperJoystickFlatTerrain", "PupperJoystickRoughTerrain"):
+    # We copy the Go1Joystick config as a starting point.
+    # Pupper is smaller and lighter, so might need fewer timesteps.
+    rl_config.num_timesteps = 100_000_000 # Reduced from Go1's 200M
+    rl_config.num_evals = 10
+    rl_config.num_resets_per_eval = 1
+    rl_config.network_factory = config_dict.create(
+        policy_hidden_layer_sizes=(512, 256, 128),
+        value_hidden_layer_sizes=(512, 256, 128),
+        policy_obs_key="state",
+        value_obs_key="privileged_state", # Using privileged state is a good idea
+    )
+
+  elif env_name == "PupperGetup":
+    # We copy the Go1Getup config. This task is simpler.
+    rl_config.num_timesteps = 50_000_000 # Reduced from Go1's 50M
+    rl_config.num_evals = 5
+    rl_config.network_factory = config_dict.create(
+        policy_hidden_layer_sizes=(512, 256, 128),
+        value_hidden_layer_sizes=(512, 256, 128),
+        policy_obs_key="state",
+        value_obs_key="privileged_state",
+    )
+
+  # ==============================================================================
+  # END OF PUPPER CONFIGURATION
+  # ==============================================================================
+
+  # --- (Keep the rest of the original elif blocks for other robots) ---
 
   elif env_name in ("G1JoystickFlatTerrain", "G1JoystickRoughTerrain"):
     rl_config.num_timesteps = 200_000_000
@@ -163,6 +200,8 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
   return rl_config
 
 
+# --- (The rsl_rl_config function remains unchanged) ---
+
 def rsl_rl_config(env_name: str) -> config_dict.ConfigDict:
   """Returns tuned RSL-RL PPO config for the given environment."""
 
@@ -212,6 +251,8 @@ def rsl_rl_config(env_name: str) -> config_dict.ConfigDict:
       "BerkeleyHumanoidJoystickFlatTerrain",
       "G1Joystick",
       "Go1JoystickFlatTerrain",
+      "PupperGetup", # Also add Pupper here for shorter RSL-RL runs if needed
+      "PupperJoystickFlatTerrain",
   ):
     rl_config.max_iterations = 1000
   if env_name == "Go1JoystickFlatTerrain":

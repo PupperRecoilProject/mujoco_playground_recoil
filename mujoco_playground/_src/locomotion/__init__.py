@@ -22,6 +22,7 @@ from ml_collections import config_dict
 from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
+# --- (保留所有原始導入) ---
 from mujoco_playground._src.locomotion.apollo import joystick as apollo_joystick
 from mujoco_playground._src.locomotion.barkour import joystick as barkour_joystick
 from mujoco_playground._src.locomotion.berkeley_humanoid import joystick as berkeley_humanoid_joystick
@@ -41,62 +42,57 @@ from mujoco_playground._src.locomotion.spot import joystick_gait_tracking as spo
 from mujoco_playground._src.locomotion.t1 import joystick as t1_joystick
 from mujoco_playground._src.locomotion.t1 import randomize as t1_randomize
 
+# ==============================================================================
+# Step 1: 導入你的 Pupper 模組
+# ==============================================================================
+from mujoco_playground._src.locomotion.pupper import getup as pupper_getup
+from mujoco_playground._src.locomotion.pupper import joystick as pupper_joystick
+from mujoco_playground._src.locomotion.pupper import randomize as pupper_randomize
+# ==============================================================================
+
 
 mjx_env.ensure_menagerie_exists()  # Ensure menagerie exists when module is imported.
 
 _envs = {
-    "ApolloJoystickFlatTerrain": functools.partial(
-        apollo_joystick.Joystick, task="flat_terrain"
-    ),
+    # --- (保留所有原始環境) ---
+    "ApolloJoystickFlatTerrain": functools.partial(apollo_joystick.Joystick, task="flat_terrain"),
     "BarkourJoystick": barkour_joystick.Joystick,
-    "BerkeleyHumanoidJoystickFlatTerrain": functools.partial(
-        berkeley_humanoid_joystick.Joystick, task="flat_terrain"
-    ),
-    "BerkeleyHumanoidJoystickRoughTerrain": functools.partial(
-        berkeley_humanoid_joystick.Joystick, task="rough_terrain"
-    ),
-    "G1JoystickFlatTerrain": functools.partial(
-        g1_joystick.Joystick, task="flat_terrain"
-    ),
-    "G1JoystickRoughTerrain": functools.partial(
-        g1_joystick.Joystick, task="rough_terrain"
-    ),
-    "Go1JoystickFlatTerrain": functools.partial(
-        go1_joystick.Joystick, task="flat_terrain"
-    ),
-    "Go1JoystickRoughTerrain": functools.partial(
-        go1_joystick.Joystick, task="rough_terrain"
-    ),
+    "BerkeleyHumanoidJoystickFlatTerrain": functools.partial(berkeley_humanoid_joystick.Joystick, task="flat_terrain"),
+    "BerkeleyHumanoidJoystickRoughTerrain": functools.partial(berkeley_humanoid_joystick.Joystick, task="rough_terrain"),
+    "G1JoystickFlatTerrain": functools.partial(g1_joystick.Joystick, task="flat_terrain"),
+    "G1JoystickRoughTerrain": functools.partial(g1_joystick.Joystick, task="rough_terrain"),
+    "Go1JoystickFlatTerrain": functools.partial(go1_joystick.Joystick, task="flat_terrain"),
+    "Go1JoystickRoughTerrain": functools.partial(go1_joystick.Joystick, task="rough_terrain"),
     "Go1Getup": go1_getup.Getup,
     "Go1Handstand": go1_handstand.Handstand,
     "Go1Footstand": go1_handstand.Footstand,
     "H1InplaceGaitTracking": h1_inplace_gait_tracking.InplaceGaitTracking,
     "H1JoystickGaitTracking": h1_joystick_gait_tracking.JoystickGaitTracking,
     "Op3Joystick": op3_joystick.Joystick,
-    "SpotFlatTerrainJoystick": functools.partial(
-        spot_joystick.Joystick, task="flat_terrain"
-    ),
+    "SpotFlatTerrainJoystick": functools.partial(spot_joystick.Joystick, task="flat_terrain"),
     "SpotGetup": spot_getup.Getup,
-    "SpotJoystickGaitTracking": (
-        spot_joystick_gait_tracking.JoystickGaitTracking
-    ),
-    "T1JoystickFlatTerrain": functools.partial(
-        t1_joystick.Joystick, task="flat_terrain"
-    ),
-    "T1JoystickRoughTerrain": functools.partial(
-        t1_joystick.Joystick, task="rough_terrain"
-    ),
+    "SpotJoystickGaitTracking": spot_joystick_gait_tracking.JoystickGaitTracking,
+    "T1JoystickFlatTerrain": functools.partial(t1_joystick.Joystick, task="flat_terrain"),
+    "T1JoystickRoughTerrain": functools.partial(t1_joystick.Joystick, task="rough_terrain"),
+    
+    # ==============================================================================
+    # Step 2: 註冊你的 Pupper 環境
+    # 我們仿造Go1的命名慣例，並使用functools.partial來指定任務（地形）
+    # ==============================================================================
+    "PupperJoystickFlatTerrain": functools.partial(pupper_joystick.Joystick, task="flat_terrain"),
+    # 如果你未來創建了崎嶇地形的XML，可以 легко 添加：
+    # "PupperJoystickRoughTerrain": functools.partial(pupper_joystick.Joystick, task="rough_terrain"),
+    "PupperGetup": pupper_getup.Getup,
+    # Pupper 沒有 handstand 任務，所以我們不添加
+    # ==============================================================================
 }
 
 _cfgs = {
+    # --- (保留所有原始配置) ---
     "ApolloJoystickFlatTerrain": apollo_joystick.default_config,
     "BarkourJoystick": barkour_joystick.default_config,
-    "BerkeleyHumanoidJoystickFlatTerrain": (
-        berkeley_humanoid_joystick.default_config
-    ),
-    "BerkeleyHumanoidJoystickRoughTerrain": (
-        berkeley_humanoid_joystick.default_config
-    ),
+    "BerkeleyHumanoidJoystickFlatTerrain": berkeley_humanoid_joystick.default_config,
+    "BerkeleyHumanoidJoystickRoughTerrain": berkeley_humanoid_joystick.default_config,
     "G1JoystickFlatTerrain": g1_joystick.default_config,
     "G1JoystickRoughTerrain": g1_joystick.default_config,
     "Go1JoystickFlatTerrain": go1_joystick.default_config,
@@ -112,15 +108,19 @@ _cfgs = {
     "SpotJoystickGaitTracking": spot_joystick_gait_tracking.default_config,
     "T1JoystickFlatTerrain": t1_joystick.default_config,
     "T1JoystickRoughTerrain": t1_joystick.default_config,
+    
+    # ==============================================================================
+    # Step 3: 註冊你的 Pupper 環境的預設配置
+    # ==============================================================================
+    "PupperJoystickFlatTerrain": pupper_joystick.default_config,
+    "PupperGetup": pupper_getup.default_config,
+    # ==============================================================================
 }
 
 _randomizer = {
-    "BerkeleyHumanoidJoystickFlatTerrain": (
-        berkeley_humanoid_randomize.domain_randomize
-    ),
-    "BerkeleyHumanoidJoystickRoughTerrain": (
-        berkeley_humanoid_randomize.domain_randomize
-    ),
+    # --- (保留所有原始隨機化函式) ---
+    "BerkeleyHumanoidJoystickFlatTerrain": berkeley_humanoid_randomize.domain_randomize,
+    "BerkeleyHumanoidJoystickRoughTerrain": berkeley_humanoid_randomize.domain_randomize,
     "G1JoystickFlatTerrain": g1_randomize.domain_randomize,
     "G1JoystickRoughTerrain": g1_randomize.domain_randomize,
     "Go1JoystickFlatTerrain": go1_randomize.domain_randomize,
@@ -130,8 +130,18 @@ _randomizer = {
     "Go1Footstand": go1_randomize.domain_randomize,
     "T1JoystickFlatTerrain": t1_randomize.domain_randomize,
     "T1JoystickRoughTerrain": t1_randomize.domain_randomize,
+
+    # ==============================================================================
+    # Step 4: 註冊你的 Pupper 環境的領域隨機化函式
+    # 我們的 `randomize.py` 檔案是通用的，所以可以應用於多個任務
+    # ==============================================================================
+    "PupperJoystickFlatTerrain": pupper_randomize.domain_randomize,
+    "PupperGetup": pupper_randomize.domain_randomize,
+    # ==============================================================================
 }
 
+
+# --- (保留所有原始的輔助函式，它們現在會自動處理你的新環境) ---
 
 def __getattr__(name):
   if name == "ALL_ENVS":
@@ -144,13 +154,7 @@ def register_environment(
     env_class: Type[mjx_env.MjxEnv],
     cfg_class: Callable[[], config_dict.ConfigDict],
 ) -> None:
-  """Register a new environment.
-
-  Args:
-      env_name: The name of the environment.
-      env_class: The environment class.
-      cfg_class: The default configuration.
-  """
+  """Register a new environment."""
   _envs[env_name] = env_class
   _cfgs[env_name] = cfg_class
 
@@ -170,17 +174,7 @@ def load(
     config: Optional[config_dict.ConfigDict] = None,
     config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
 ) -> mjx_env.MjxEnv:
-  """Get an environment instance with the given configuration.
-
-  Args:
-      env_name: The name of the environment.
-      config: The configuration to use. If not provided, the default
-        configuration is used.
-      config_overrides: A dictionary of overrides for the configuration.
-
-  Returns:
-      An instance of the environment.
-  """
+  """Get an environment instance with the given configuration."""
   if env_name not in _envs:
     raise ValueError(
         f"Env '{env_name}' not found. Available envs: {_cfgs.keys()}"

@@ -42,7 +42,7 @@
         <geom group="3"/>
         <default class="foot">
           <!-- Pupper的腳部碰撞體定義 -->
-          <geom type="sphere" size="0.0175" solimp="0.9 .95 0.01" condim="3" friction="0.8 0.1 0.1"/>
+          <geom type="sphere" size="0.009525" solimp="0.9 .95 0.01" condim="3" friction="0.8 0.1 0.1"/>
         </default>
       </default>
     </default>
@@ -80,14 +80,14 @@
       <body name="FR_hip" pos="-0.046891 -0.203946 -0.0064">
         <joint class="abduction" name="FR_hip_joint"/> <!-- Mapped from abduction_front_right -->
         <geom class="visual" mesh="Hip_R"/>
-        <body name="FR_thigh" pos="-0.037 0.028 0">
+        <body name="FR_thigh" pos="-0.037 0.028 0" axisangle="1 0 0 0.7854">
           <joint class="hip" name="FR_thigh_joint"/> <!-- Mapped from hip_front_right -->
           <geom class="visual" mesh="Upper_Leg_R"/>
-          <body name="FR_calf" pos="0 0 -0.08">
+          <body name="FR_calf" pos="0 0 -0.08" axisangle="1 0 0 -1.57">
             <joint class="knee" name="FR_calf_joint"/> <!-- Mapped from knee_front_right -->
             <geom class="visual" mesh="Lower_Leg_R"/>
             <geom name="FR" class="foot" pos="0.003475 0 -0.11"/>
-            <site name="FR" pos="0.003475 0 -0.11" type="sphere" size="0.0175" group="5"/>
+            <site name="FR" pos="0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
           </body>
         </body>
       </body>
@@ -96,14 +96,14 @@
       <body name="FL_hip" pos="0.047109 -0.203946 -0.0064">
         <joint class="abduction" name="FL_hip_joint"/> <!-- Mapped from abduction_front_left -->
         <geom class="visual" mesh="Hip_L"/>
-        <body name="FL_thigh" pos="0.037 0.028 0">
+        <body name="FL_thigh" pos="0.037 0.028 0" axisangle="1 0 0 0.7854">
           <joint class="hip" name="FL_thigh_joint"/> <!-- Mapped from hip_front_left -->
           <geom class="visual" mesh="Upper_Leg_L"/>
-          <body name="FL_calf" pos="0 0 -0.08">
+          <body name="FL_calf" pos="0 0 -0.08" axisangle="1 0 0 -1.57">
             <joint class="knee" name="FL_calf_joint"/> <!-- Mapped from knee_front_left -->
             <geom class="visual" mesh="Lower_Leg_L"/>
             <geom name="FL" class="foot" pos="-0.003475 0 -0.11"/>
-            <site name="FL" pos="-0.003475 0 -0.11" type="sphere" size="0.0175" group="5"/>
+            <site name="FL" pos="-0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
           </body>
         </body>
       </body>
@@ -112,14 +112,14 @@
       <body name="RR_hip" pos="-0.046896 -0.004096 -0.0064">
         <joint class="abduction" name="RR_hip_joint"/> <!-- Mapped from abduction_hind_right -->
         <geom class="visual" mesh="Hip_R"/>
-        <body name="RR_thigh" pos="-0.037 0.028 0">
+        <body name="RR_thigh" pos="-0.037 0.028 0" axisangle="1 0 0 0.7854">
           <joint class="hip" name="RR_thigh_joint"/> <!-- Mapped from hip_hind_right -->
           <geom class="visual" mesh="Upper_Leg_R"/>
-          <body name="RR_calf" pos="0 0 -0.08">
+          <body name="RR_calf" pos="0 0 -0.08" axisangle="1 0 0 -1.57">
             <joint class="knee" name="RR_calf_joint"/> <!-- Mapped from knee_hind_right -->
             <geom class="visual" mesh="Lower_Leg_R"/>
             <geom name="RR" class="foot" pos="0.003475 0 -0.11"/>
-            <site name="RR" pos="0.003475 0 -0.11" type="sphere" size="0.0175" group="5"/>
+            <site name="RR" pos="0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
           </body>
         </body>
       </body>
@@ -128,14 +128,14 @@
       <body name="RL_hip" pos="0.047104 -0.004096 -0.0064">
         <joint class="abduction" name="RL_hip_joint"/> <!-- Mapped from abduction_hind_left -->
         <geom class="visual" mesh="Hip_L"/>
-        <body name="RL_thigh" pos="0.037 0.028 0">
+        <body name="RL_thigh" pos="0.037 0.028 0" axisangle="1 0 0 0.7854">
           <joint class="hip" name="RL_thigh_joint"/> <!-- Mapped from hip_hind_left -->
           <geom class="visual" mesh="Upper_Leg_L"/>
-          <body name="RL_calf" pos="0 0 -0.08">
+          <body name="RL_calf" pos="0 0 -0.08" axisangle="1 0 0 -1.57">
             <joint class="knee" name="RL_calf_joint"/> <!-- Mapped from knee_hind_left -->
             <geom class="visual" mesh="Lower_Leg_L"/>
             <geom name="RL" class="foot" pos="-0.003475 0 -0.11"/>
-            <site name="RL" pos="-0.003475 0 -0.11" type="sphere" size="0.0175" group="5"/>
+            <site name="RL" pos="-0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
           </body>
         </body>
       </body>

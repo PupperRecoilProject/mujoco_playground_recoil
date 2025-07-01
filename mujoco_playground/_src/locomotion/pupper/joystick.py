@@ -73,7 +73,7 @@ def default_config() -> config_dict.ConfigDict:
           ),
           tracking_sigma=0.25,
           # Step 2: Adjust max_foot_height for the shorter Pupper
-          max_foot_height=0.08, # Go1 was 0.1, Pupper legs are shorter
+          max_foot_height=0.06, # Go1 was 0.1, Pupper legs are shorter
       ),
       pert_config=config_dict.create(
           enable=False,
@@ -82,8 +82,8 @@ def default_config() -> config_dict.ConfigDict:
           kick_wait_times=[1.0, 3.0],
       ),
       command_config=config_dict.create(
-          a=[1.0, 0.5, 0.8], # Reduced command range for smaller Pupper
-          b=[0.9, 0.25, 0.5],
+          a=[0.5, 1, 0.6], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
+          b=[0.25, 0.9, 0.5],# b=[0.9, 0.25, 0.5]
       ),
   )
   return config

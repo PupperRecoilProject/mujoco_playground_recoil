@@ -41,7 +41,7 @@ def default_config() -> config_dict.ConfigDict:
       drop_from_height_prob=0.6,
       settle_time=0.5,
       action_repeat=1,
-      action_scale=0.5,
+      action_scale=0.12,
       soft_joint_pos_limit_factor=0.95,
       energy_termination_threshold=np.inf,
       noise_config=config_dict.create(
@@ -56,7 +56,7 @@ def default_config() -> config_dict.ConfigDict:
       reward_config=config_dict.create(
           scales=config_dict.create(
               orientation=1.0,
-              torso_height=1.0,
+              torso_height=2,
               posture=1.0,
               stand_still=1.0,
               action_rate=-0.001,
@@ -123,7 +123,7 @@ class Getup(pupper_base.PupperEnv):
     # Step 4: CRITICAL - Adjust desired height for Pupper
     # Go1 height was ~0.275m. Pupper is shorter. 
     # From our XML, home height is 0.23m. Let's set a target slightly below that.
-    self._z_des = 0.20
+    self._z_des = 0.16
     
     self._up_vec = jp.array([0.0, 0.0, -1.0]) # This is incorrect for MuJoCo's gravity
     # Let's correct it. Gravity is -z, so the up vector in world frame is [0, 0, 1].

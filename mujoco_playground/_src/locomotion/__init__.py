@@ -47,6 +47,8 @@ from mujoco_playground._src.locomotion.t1 import randomize as t1_randomize
 # ==============================================================================
 from mujoco_playground._src.locomotion.pupper import getup as pupper_getup
 from mujoco_playground._src.locomotion.pupper import joystick as pupper_joystick
+from mujoco_playground._src.locomotion.pupper import joysticks_sac as pupper_joystick_sac
+from mujoco_playground._src.locomotion.pupper import joystickwithgun as pupper_joystickwithgun
 from mujoco_playground._src.locomotion.pupper import randomize as pupper_randomize
 # ==============================================================================
 
@@ -80,6 +82,8 @@ _envs = {
     # 我們仿造Go1的命名慣例，並使用functools.partial來指定任務（地形）
     # ==============================================================================
     "PupperJoystickFlatTerrain": functools.partial(pupper_joystick.Joystick, task="flat_terrain"),
+    "PupperJoystickSacFlatTerrain": functools.partial(pupper_joystick_sac.JoystickSac, task="flat_terrain"),
+    "PupperJoystickWithGun": functools.partial(pupper_joystickwithgun.JoystickWithGun, task="flat_terrain"),
     # 如果你未來創建了崎嶇地形的XML，可以 легко 添加：
     # "PupperJoystickRoughTerrain": functools.partial(pupper_joystick.Joystick, task="rough_terrain"),
     "PupperGetup": pupper_getup.Getup,
@@ -113,6 +117,8 @@ _cfgs = {
     # Step 3: 註冊你的 Pupper 環境的預設配置
     # ==============================================================================
     "PupperJoystickFlatTerrain": pupper_joystick.default_config,
+    "PupperJoystickSacFlatTerrain": pupper_joystick_sac.default_config,
+    "PupperJoystickWithGun": pupper_joystickwithgun.default_config,
     "PupperGetup": pupper_getup.default_config,
     # ==============================================================================
 }
@@ -136,6 +142,8 @@ _randomizer = {
     # 我們的 `randomize.py` 檔案是通用的，所以可以應用於多個任務
     # ==============================================================================
     "PupperJoystickFlatTerrain": pupper_randomize.domain_randomize,
+    "PupperJoystickSacFlatTerrain": pupper_randomize.domain_randomize,
+    "PupperJoystickWithGun": pupper_randomize.domain_randomize,
     "PupperGetup": pupper_randomize.domain_randomize,
     # ==============================================================================
 }

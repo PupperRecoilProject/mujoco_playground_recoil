@@ -96,7 +96,7 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
   # START OF PUPPER CONFIGURATION
   # ==============================================================================
 
-  elif env_name in ("PupperJoystickFlatTerrain", "PupperJoystickRoughTerrain"):
+  elif env_name in ("PupperJoystickFlatTerrain", "PupperJoystickRoughTerrain", "PupperJoystickWithGun"):
     # We copy the Go1Joystick config as a starting point.
     # Pupper is smaller and lighter, so might need fewer timesteps.
     rl_config.num_timesteps = 200_000_000 # Reduced from Go1's 200M
@@ -260,3 +260,75 @@ def rsl_rl_config(env_name: str) -> config_dict.ConfigDict:
     rl_config.algorithm.schedule = "fixed"
 
   return rl_config
+
+
+# ==============================================================================
+# START: BRAX SAC CONFIGURATION
+# ==============================================================================
+def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
+  """
+  Returns a tuned Brax SAC config for the given locomotion environment.
+  This function assumes the environment has been prepared for flat observations
+  (e.g., PupperJoystickSac environments).
+  """
+  # 從 locomotion 模組獲取環境的默認配置
+  # 這將提供 episode_length 等基本資訊
+  env_config = locomotion.get_default_config(env_name)
+
+  # --- 基礎 SAC RL 配置 ---
+  # 這些參數是 SAC 演算法的標準起點
+  rl_config = config_dict.create(
+      # 訓練流程參數
+      num_timesteps=50_000_000,  # SAC 數據效率高，總步數可相對較少
+      num_evals=10,  # 評估頻率
+      episode_length=env_config.episode_length,
+      action_repeat=1,
+      num_envs=256,  # SAC 通常使用多個並行環境來收集數據到 Replay Buffer
+      num_eval_envs=128,
+      seed=0,
+
+      # Replay Buffer 參數
+      min_replay_size=25_000, # 學習開始前的探索步數
+      max_replay_size=1_000_000,
+      batch_size=256,
+      grad_updates_per_step=20, # 每收集一步數據，進行一次網路更新
+
+      # SAC 演算法核心參數
+      learning_rate=3e-4,
+      discounting=0.99,
+      reward_scaling=10.0,  # SAC 對獎勵尺度敏感
+      tau=0.005,  # 目標網路軟更新係數
+      normalize_observations=True, # 【關鍵】現在可以安全地開啟！
+      deterministic_eval=True,  # 評估時使用確定性策略
+
+      # 網路結構參數 (將由 network_factory 處理)
+      network_factory=config_dict.create(
+          # SAC 的 Actor 和 Critic 網路通常是對稱的、深度適中
+          hidden_layer_sizes=(256, 256, 256),
+          # 我們假設 make_sac_networks 能夠從 observation_spec 中處理 'state'
+          # 如果您需要特權觀測，且環境提供，可以在此指定
+          # 例如: policy_obs_key='state', value_obs_key='privileged_state',
+      ),
+  )
+
+  # --- 針對不同環境的特殊化配置 ---
+  # 這裡只針對我們新創建的 PupperJoystickSac 環境進行配置
+  if env_name in ("PupperJoystickSacFlatTerrain", "PupperJoystickSacRoughTerrain"):
+    # 這些任務相對複雜，需要更多的訓練和更大的網路容量
+    rl_config.num_timesteps = 100_000_000
+    rl_config.grad_updates_per_step = 40 # 增加數據利用率
+    rl_config.reward_scaling = 20.0 # 增強獎勵信號
+    rl_config.network_factory = config_dict.create(
+        hidden_layer_sizes=(512, 256, 128), # 更大容量的網路
+        # 如果需要，這裡可以指定 obs_key
+        # policy_obs_key='state',
+        # value_obs_key='privileged_state',
+    )
+  
+  # 如果您有其他 SAC 訓練的環境，可以在這裡添加 elif 塊
+
+  return rl_config
+
+# ==============================================================================
+# END: BRAX SAC CONFIGURATION
+# ==============================================================================

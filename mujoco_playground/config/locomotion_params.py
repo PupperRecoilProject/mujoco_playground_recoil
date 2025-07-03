@@ -260,3 +260,65 @@ def rsl_rl_config(env_name: str) -> config_dict.ConfigDict:
     rl_config.algorithm.schedule = "fixed"
 
   return rl_config
+
+
+def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
+  """
+  Returns a tuned Brax SAC config for the given locomotion environment.
+  """
+  env_config = locomotion.get_default_config(env_name)
+
+  # --- Base SAC RL config, used by default unless overridden below ---
+  # SAC 是 off-policy 演算法，其超參數與 PPO (on-policy) 有很大不同。
+  rl_config = config_dict.create(
+      # === 訓練流程與時長 ===
+      num_timesteps=50_000_000,
+      episode_length=env_config.episode_length,
+      num_evals=20,
+
+      # === 環境與執行參數 ===
+      action_repeat=1,
+      num_envs=256,  # SAC 通常使用單一環境來收集數據
+      num_eval_envs=128,
+      seed=0,
+
+      # === Replay Buffer 參數 (Off-policy 核心) ===
+      min_replay_size=25_000, # 對應 learning_starts 的概念
+      max_replay_size=1_000_000,
+      
+      # === 訓練批量與更新頻率 ===
+      batch_size=256,
+      grad_updates_per_step=1,
+
+      # === SAC 演算法核心參數 ===
+      learning_rate=3e-4,
+      discounting=0.99,
+      reward_scaling=20.0,
+      tau=0.005,
+      
+      # === 其他功能性開關 ===
+      normalize_observations=False,
+      deterministic_eval=False, # 評估時使用確定性策略
+
+      # === 網路結構 (將被 `network_factory` 覆蓋) ===
+      network_factory=config_dict.create(
+          hidden_layer_sizes=(256, 256),
+      ),
+  )
+
+  # --- Specializations for different environments ---
+
+  if env_name in ("PupperJoystickFlatTerrain", "PupperJoystickRoughTerrain"):
+    # 對於複雜的運動任務，增加訓練時長和網路容量
+    rl_config.num_timesteps = 100_000_000
+    rl_config.grad_updates_per_step = 1 # 每個環境步驟進行更多更新
+    rl_config.reward_scaling = 20.0 # 困難任務的稀疏獎勵可能需要更大尺度
+    rl_config.network_factory = config_dict.create(
+        hidden_layer_sizes=(256, 256),  # 更深的網路
+    )
+    
+  # 您可以為其他環境添加更多 elif 分支
+  # elif 'Getup' in env_name:
+  #   ...
+
+  return rl_config

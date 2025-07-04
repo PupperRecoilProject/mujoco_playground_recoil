@@ -280,18 +280,20 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
   rl_config = config_dict.create(
       # 訓練流程參數
       num_timesteps=50_000_000,  # SAC 數據效率高，總步數可相對較少
-      num_evals=10,  # 評估頻率
+      num_evals=50,  # 評估頻率
       episode_length=env_config.episode_length,
       action_repeat=1,
       num_envs=8192,  # SAC 通常使用多個並行環境來收集數據到 Replay Buffer
-      num_eval_envs=4096,
+      num_eval_envs=128,
       seed=0,
 
       # Replay Buffer 參數
       min_replay_size=25_000, # 學習開始前的探索步數
       max_replay_size=1_000_000,
       batch_size=8192,
-      grad_updates_per_step=1, # 每收集一步數據，進行一次網路更新
+      # 【關鍵調整】降低此值以減少牆上時間
+      # 從 1 (數據利用率最低，速度最快) 到 8 (平衡點) 開始嘗試
+      grad_updates_per_step=1, 
 
       # SAC 演算法核心參數
       learning_rate=3e-4,
@@ -300,6 +302,11 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
       tau=0.005,  # 目標網路軟更新係數
       normalize_observations=True, # 【關鍵】現在可以安全地開啟！
       deterministic_eval=True,  # 評估時使用確定性策略
+
+	    # 【關鍵調整】啟用 alpha 自動調整，這是現代 SAC 的最佳實踐
+      # 移除 reward_scaling，用以下參數替代
+      # autotune_entropy=True, 
+      # target_entropy 應由框架自動設為 -action_dim，如果需要手動指定，則設為該值
 
       # 網路結構參數 (將由 network_factory 處理)
       network_factory=config_dict.create(
@@ -314,10 +321,12 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
   # --- 針對不同環境的特殊化配置 ---
   # 這裡只針對我們新創建的 PupperJoystickSac 環境進行配置
   if env_name in ("PupperJoystickSacFlatTerrain", "PupperJoystickSacRoughTerrain"):
-    # 這些任務相對複雜，需要更多的訓練和更大的網路容量
-    rl_config.num_timesteps = 100_000_000
-    rl_config.grad_updates_per_step = 40 # 增加數據利用率
-    rl_config.reward_scaling = 15.0 # 增強獎勵信號
+    rl_config.num_timesteps = 1_000_000
+    # Pupper 任務相對複雜，可以保持稍高的數據利用率
+    rl_config.grad_updates_per_step = 1 # 從 40 降下來，但比基礎值高
+    # 網路容量可以考慮增加
+    # rl_config.network_factory = config_dict.create(hidden_layer_sizes=(512, 512))
+    # rl_config.reward_scaling = 15.0 # 增強獎勵信號
     rl_config.network_factory = config_dict.create(
         hidden_layer_sizes=(256, 256), # 更大容量的網路
         # 如果需要，這裡可以指定 obs_key

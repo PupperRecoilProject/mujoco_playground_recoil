@@ -294,8 +294,8 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
       grad_updates_per_step=64, # 每收集一步數據，進行一次網路更新
 
       # SAC 演算法核心參數
-      learning_rate=6e-4,
-      discounting=0.997,
+      learning_rate=3e-4,
+      discounting=0.99,
       reward_scaling=5.0,  # SAC 對獎勵尺度敏感
       tau=0.005,  # 目標網路軟更新係數
       normalize_observations=True, # 【關鍵】現在可以安全地開啟！
@@ -315,9 +315,9 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
   # 這裡只針對我們新創建的 PupperJoystickSac 環境進行配置
   if env_name in ("PupperJoystickSacFlatTerrain", "PupperJoystickSacRoughTerrain"):
     # 這些任務相對複雜，需要更多的訓練和更大的網路容量
-    rl_config.num_timesteps = 10_000_000
+    rl_config.num_timesteps = 5_000_000
     rl_config.grad_updates_per_step = 64 # 增加數據利用率
-    rl_config.reward_scaling = 30.0 # 增強獎勵信號
+    rl_config.reward_scaling = 50.0 # 增強獎勵信號
     rl_config.network_factory = config_dict.create(
         hidden_layer_sizes=(512, 256, 128), # 更大容量的網路
         # 如果需要，這裡可以指定 obs_key

@@ -283,7 +283,7 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
       num_evals=50,  # 評估頻率
       episode_length=env_config.episode_length,
       action_repeat=1,
-      num_envs=128,  # SAC 通常使用多個並行環境來收集數據到 Replay Buffer
+      num_envs=8192,  # SAC 通常使用多個並行環境來收集數據到 Replay Buffer
       num_eval_envs=128,
       seed=0,
 
@@ -317,7 +317,7 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
     # 這些任務相對複雜，需要更多的訓練和更大的網路容量
     rl_config.num_timesteps = 1_000_000
     rl_config.grad_updates_per_step = 64 # 增加數據利用率
-    rl_config.reward_scaling = 30.0 # 增強獎勵信號
+    rl_config.reward_scaling = 50.0 # 增強獎勵信號
     rl_config.network_factory = config_dict.create(
         hidden_layer_sizes=(512, 256, 128), # 更大容量的網路
         # 如果需要，這裡可以指定 obs_key

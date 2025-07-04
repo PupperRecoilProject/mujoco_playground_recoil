@@ -315,7 +315,7 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
   # 這裡只針對我們新創建的 PupperJoystickSac 環境進行配置
   if env_name in ("PupperJoystickSacFlatTerrain", "PupperJoystickSacRoughTerrain"):
     # 這些任務相對複雜，需要更多的訓練和更大的網路容量
-    rl_config.num_timesteps = 1_000_000
+    rl_config.num_timesteps = 10_000_000
     rl_config.grad_updates_per_step = 64 # 增加數據利用率
     rl_config.reward_scaling = 50.0 # 增強獎勵信號
     rl_config.network_factory = config_dict.create(

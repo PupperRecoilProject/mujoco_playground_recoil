@@ -298,7 +298,7 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
       # SAC 演算法核心參數
       learning_rate=3e-4,
       discounting=0.995,
-      reward_scaling=10.0,  # SAC 對獎勵尺度敏感
+      reward_scaling=1.0,  # SAC 對獎勵尺度敏感
       tau=0.005,  # 目標網路軟更新係數
       normalize_observations=True, # 【關鍵】現在可以安全地開啟！
       deterministic_eval=True,  # 評估時使用確定性策略

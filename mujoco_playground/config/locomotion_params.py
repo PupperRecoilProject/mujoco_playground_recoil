@@ -288,13 +288,13 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
       seed=0,
 
       # Replay Buffer 參數
-      min_replay_size=25_000, # 學習開始前的探索步數
+      min_replay_size=100_000, # 學習開始前的探索步數
       max_replay_size=1_000_000,
       batch_size=256,
-      grad_updates_per_step=20, # 每收集一步數據，進行一次網路更新
+      grad_updates_per_step=1, # 每收集一步數據，進行一次網路更新
 
       # SAC 演算法核心參數
-      learning_rate=3e-4,
+      learning_rate=1e-4,
       discounting=0.99,
       reward_scaling=10.0,  # SAC 對獎勵尺度敏感
       tau=0.005,  # 目標網路軟更新係數
@@ -316,8 +316,8 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
   if env_name in ("PupperJoystickSacFlatTerrain", "PupperJoystickSacRoughTerrain"):
     # 這些任務相對複雜，需要更多的訓練和更大的網路容量
     rl_config.num_timesteps = 100_000_000
-    rl_config.grad_updates_per_step = 40 # 增加數據利用率
-    rl_config.reward_scaling = 20.0 # 增強獎勵信號
+    rl_config.grad_updates_per_step = 1 # 增加數據利用率
+    rl_config.reward_scaling = 10.0 # 增強獎勵信號
     rl_config.network_factory = config_dict.create(
         hidden_layer_sizes=(512, 256, 128), # 更大容量的網路
         # 如果需要，這裡可以指定 obs_key

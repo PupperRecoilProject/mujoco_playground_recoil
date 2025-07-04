@@ -283,19 +283,19 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
       num_evals=10,  # 評估頻率
       episode_length=env_config.episode_length,
       action_repeat=1,
-      num_envs=256,  # SAC 通常使用多個並行環境來收集數據到 Replay Buffer
-      num_eval_envs=128,
+      num_envs=8192,  # SAC 通常使用多個並行環境來收集數據到 Replay Buffer
+      num_eval_envs=4096,
       seed=0,
 
       # Replay Buffer 參數
-      min_replay_size=100_000, # 學習開始前的探索步數
+      min_replay_size=25_000, # 學習開始前的探索步數
       max_replay_size=1_000_000,
-      batch_size=256,
+      batch_size=8192,
       grad_updates_per_step=1, # 每收集一步數據，進行一次網路更新
 
       # SAC 演算法核心參數
-      learning_rate=1e-4,
-      discounting=0.99,
+      learning_rate=3e-4,
+      discounting=0.995,
       reward_scaling=10.0,  # SAC 對獎勵尺度敏感
       tau=0.005,  # 目標網路軟更新係數
       normalize_observations=True, # 【關鍵】現在可以安全地開啟！
@@ -304,7 +304,7 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
       # 網路結構參數 (將由 network_factory 處理)
       network_factory=config_dict.create(
           # SAC 的 Actor 和 Critic 網路通常是對稱的、深度適中
-          hidden_layer_sizes=(256, 256, 256),
+          hidden_layer_sizes=(256, 256),
           # 我們假設 make_sac_networks 能夠從 observation_spec 中處理 'state'
           # 如果您需要特權觀測，且環境提供，可以在此指定
           # 例如: policy_obs_key='state', value_obs_key='privileged_state',
@@ -316,10 +316,10 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
   if env_name in ("PupperJoystickSacFlatTerrain", "PupperJoystickSacRoughTerrain"):
     # 這些任務相對複雜，需要更多的訓練和更大的網路容量
     rl_config.num_timesteps = 100_000_000
-    rl_config.grad_updates_per_step = 1 # 增加數據利用率
-    rl_config.reward_scaling = 10.0 # 增強獎勵信號
+    rl_config.grad_updates_per_step = 40 # 增加數據利用率
+    rl_config.reward_scaling = 15.0 # 增強獎勵信號
     rl_config.network_factory = config_dict.create(
-        hidden_layer_sizes=(512, 256, 128), # 更大容量的網路
+        hidden_layer_sizes=(256, 256), # 更大容量的網路
         # 如果需要，這裡可以指定 obs_key
         # policy_obs_key='state',
         # value_obs_key='privileged_state',

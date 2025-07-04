@@ -283,7 +283,7 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
       num_evals=50,  # 評估頻率
       episode_length=env_config.episode_length,
       action_repeat=1,
-      num_envs=8192,  # SAC 通常使用多個並行環境來收集數據到 Replay Buffer
+      num_envs=16384,  # SAC 通常使用多個並行環境來收集數據到 Replay Buffer
       num_eval_envs=128,
       seed=0,
 

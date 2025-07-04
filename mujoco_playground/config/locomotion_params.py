@@ -283,17 +283,15 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
       num_evals=50,  # 評估頻率
       episode_length=env_config.episode_length,
       action_repeat=1,
-      num_envs=8192,  # SAC 通常使用多個並行環境來收集數據到 Replay Buffer
+      num_envs=256,  # SAC 通常使用多個並行環境來收集數據到 Replay Buffer
       num_eval_envs=128,
       seed=0,
 
       # Replay Buffer 參數
-      min_replay_size=25_000, # 學習開始前的探索步數
+      min_replay_size=100_000, # 學習開始前的探索步數
       max_replay_size=1_000_000,
-      batch_size=8192,
-      # 【關鍵調整】降低此值以減少牆上時間
-      # 從 1 (數據利用率最低，速度最快) 到 8 (平衡點) 開始嘗試
-      grad_updates_per_step=1, 
+      batch_size=256,
+      grad_updates_per_step=1, # 每收集一步數據，進行一次網路更新
 
       # SAC 演算法核心參數
       learning_rate=1e-4,
@@ -303,15 +301,10 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
       normalize_observations=True, # 【關鍵】現在可以安全地開啟！
       deterministic_eval=True,  # 評估時使用確定性策略
 
-	    # 【關鍵調整】啟用 alpha 自動調整，這是現代 SAC 的最佳實踐
-      # 移除 reward_scaling，用以下參數替代
-      # autotune_entropy=True, 
-      # target_entropy 應由框架自動設為 -action_dim，如果需要手動指定，則設為該值
-
       # 網路結構參數 (將由 network_factory 處理)
       network_factory=config_dict.create(
           # SAC 的 Actor 和 Critic 網路通常是對稱的、深度適中
-          hidden_layer_sizes=(256, 256),
+          hidden_layer_sizes=(256, 256, 256),
           # 我們假設 make_sac_networks 能夠從 observation_spec 中處理 'state'
           # 如果您需要特權觀測，且環境提供，可以在此指定
           # 例如: policy_obs_key='state', value_obs_key='privileged_state',
@@ -321,14 +314,12 @@ def brax_sac_config(env_name: str) -> config_dict.ConfigDict:
   # --- 針對不同環境的特殊化配置 ---
   # 這裡只針對我們新創建的 PupperJoystickSac 環境進行配置
   if env_name in ("PupperJoystickSacFlatTerrain", "PupperJoystickSacRoughTerrain"):
+    # 這些任務相對複雜，需要更多的訓練和更大的網路容量
     rl_config.num_timesteps = 1_000_000
-    # Pupper 任務相對複雜，可以保持稍高的數據利用率
-    rl_config.grad_updates_per_step = 4 # 從 40 降下來，但比基礎值高
-    # 網路容量可以考慮增加
-    # rl_config.network_factory = config_dict.create(hidden_layer_sizes=(512, 512))
-    # rl_config.reward_scaling = 15.0 # 增強獎勵信號
+    rl_config.grad_updates_per_step = 1 # 增加數據利用率
+    rl_config.reward_scaling = 10.0 # 增強獎勵信號
     rl_config.network_factory = config_dict.create(
-        hidden_layer_sizes=(256, 256), # 更大容量的網路
+        hidden_layer_sizes=(512, 256, 128), # 更大容量的網路
         # 如果需要，這裡可以指定 obs_key
         # policy_obs_key='state',
         # value_obs_key='privileged_state',

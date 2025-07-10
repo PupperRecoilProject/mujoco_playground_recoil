@@ -74,7 +74,7 @@ def default_config() -> config_dict.ConfigDict:
               feet_clearance=-2.0,
               feet_height=-0.2,
               feet_slip=-0.1,
-              feet_air_time=0.1,
+              feet_air_time=0.2,
           ),
           tracking_sigma=0.25,
           max_foot_height=0.1,
@@ -94,10 +94,11 @@ def default_config() -> config_dict.ConfigDict:
       
       
       firearm_recoil=config_dict.create(
-        enable=True,
-        interval=100,  # every 100 steps
-        velocity=[0.0, -0.42, 0.0],  # negative y-direction
-        duration=0.02,  # seconds
+          enable=True,
+          interval=100,  # steps between shots
+          velocity=[0.0, 0.42, 0.0],  # recoil direction
+          duration=0.02,  # seconds of force application
+          warning_duration=3,  # number of steps before firing to give warning
       ),
   )
 
@@ -224,6 +225,7 @@ class JoystickWithGun(pupper_base.PupperEnv):
         
         "firearm_recoil_timer": 0,
         "firearm_recoil_steps": 0,
+        "firearm_recoil_warning": False,
     }
 
     metrics = {}
@@ -305,38 +307,35 @@ class JoystickWithGun(pupper_base.PupperEnv):
     
   def _apply_firearm_recoil(self, state: mjx_env.State) -> mjx_env.State:
     cfg = self._config.firearm_recoil
-    apply_recoil = (state.info["firearm_recoil_timer"] == 0)
+    steps = state.info["firearm_recoil_steps"]
+
+    # Flag to indicate whether it's time to fire
+    apply_recoil = (steps == cfg.interval)
+
+    # Flag to indicate whether we're in warning zone
+    time_to_fire = (cfg.interval - steps) <= cfg.warning_duration
+
+    # Apply the warning flag
+    state.info["firearm_recoil_warning"] = time_to_fire
 
     def apply_force(state):
-        # Compute force = mass * delta_v / delta_t
         force = self._torso_mass * jp.array(cfg.velocity) / cfg.duration
         xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
         xfrc_applied = xfrc_applied.at[self._torso_body_id, :3].set(force)
-        state = state.replace(
-            data=state.data.replace(xfrc_applied=xfrc_applied)
-        )
-        return state
+        return state.replace(data=state.data.replace(xfrc_applied=xfrc_applied))
 
     def no_force(state):
         xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
-        state = state.replace(
-            data=state.data.replace(xfrc_applied=xfrc_applied)
-        )
-        return state
+        return state.replace(data=state.data.replace(xfrc_applied=xfrc_applied))
 
-    state = jax.lax.cond(
-        cfg.enable & apply_recoil, apply_force, no_force, state
-    )
+    # Apply recoil if needed
+    state = jax.lax.cond(cfg.enable & apply_recoil, apply_force, no_force, state)
 
-    # Update timers
-    state.info["firearm_recoil_timer"] = jp.where(
-        cfg.enable & (state.info["firearm_recoil_steps"] >= cfg.interval),
-        0,
-        state.info["firearm_recoil_timer"] + 1,
-    )
+    # Reset or increment step counter
+    reset_timer = cfg.enable & apply_recoil
     state.info["firearm_recoil_steps"] = jp.where(
-        cfg.enable & (state.info["firearm_recoil_steps"] >= cfg.interval),
-        1,
+        reset_timer,
+        1,  # restart after fire
         state.info["firearm_recoil_steps"] + 1,
     )
 
@@ -402,6 +401,7 @@ class JoystickWithGun(pupper_base.PupperEnv):
         noisy_joint_vel,  # 12
         info["last_act"],  # 12
         info["command"],  # 3
+        jp.array([info["firearm_recoil_warning"]], dtype=jp.float32),
     ])
 
     accelerometer = self.get_accelerometer(data)
@@ -582,7 +582,7 @@ class JoystickWithGun(pupper_base.PupperEnv):
   ) -> jax.Array:
     # Reward air time.
     cmd_norm = jp.linalg.norm(commands)
-    rew_air_time = jp.sum((air_time - 0.1) * first_contact)
+    rew_air_time = jp.sum((air_time - 0.2) * first_contact) #default :jp.sum((air_time - 0.1) * first_contact) uhijhujhjuytrfghuytrftyuhgftyuytrfghyt6uhgtyu765ewsdfghui7654edfghjiokmki87y
     rew_air_time *= cmd_norm > 0.01  # No reward for zero commands.
     return rew_air_time
 

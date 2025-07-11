@@ -54,30 +54,30 @@ def default_config() -> config_dict.ConfigDict:
       reward_config=config_dict.create(
           scales=config_dict.create(
               # Tracking.
-              tracking_lin_vel=1.0,
-              tracking_ang_vel=0.5,
+              tracking_lin_vel=2.5, #default: 1.0,
+              tracking_ang_vel=1.0, #default: 0.5,
               # Base reward.
-              lin_vel_z=-0.5,
-              ang_vel_xy=-0.05,
-              orientation=-5.0,
+              lin_vel_z=-0.5, #default: -0.5,
+              ang_vel_xy=-0.10, #default: -0.05,
+              orientation=-5.0, #default: -5.0,
               # Other.
-              dof_pos_limits=-1.0,
-              pose=0.5,
+              dof_pos_limits=-1.0, #default: -1.0,
+              pose=0.5, #default: 0.5,
               # Other.
-              termination=-1.0,
-              stand_still=-1.0,
+              termination=-1.0, #default: -1.0,
+              stand_still=-1.0, #default: -1.0,
               # Regularization.
-              torques=-0.0002,
-              action_rate=-0.01,
-              energy=-0.001,
+              torques=-0.0002,  #default: -0.0002,
+              action_rate=-0.01, #default: -0.01,
+              energy=-0.001, #default: -0.001,
               # Feet.
-              feet_clearance=-2.0,
-              feet_height=-0.2,
-              feet_slip=-0.1,
-              feet_air_time=0.2,
+              feet_clearance=-2.0, #default: -2.0,
+              feet_height=-0.2, #default: -0.2,
+              feet_slip=-0.1, #default: -0.1,
+              feet_air_time=0.2, #default: 0.2
           ),
-          tracking_sigma=0.25,
-          max_foot_height=0.1,
+          tracking_sigma=0.25, # default: 0.25
+          max_foot_height=0.1, # default: 0.1
       ),
       pert_config=config_dict.create(
           enable=False,
@@ -87,7 +87,7 @@ def default_config() -> config_dict.ConfigDict:
       ),
       command_config=config_dict.create(
           # Uniform distribution for command amplitude.
-          a=[1.5, 0.8, 1.2],
+          a=[0.3, 0.4, 0.3], #Vx,Vy,Omega
           # Probability of not zeroing out new command.
           b=[0.9, 0.25, 0.5],
       ),
@@ -95,10 +95,11 @@ def default_config() -> config_dict.ConfigDict:
       
       firearm_recoil=config_dict.create(
           enable=True,
-          interval=100,  # steps between shots
-          velocity=[0.0, 0.42, 0.0],  # recoil direction
-          duration=0.02,  # seconds of force application
-          warning_duration=3,  # number of steps before firing to give warning
+          interval_range=[50, 200],  # Randomized interval between 80 and 150 steps.
+          warning_duration=1,
+          duration=0.2,
+          direction=[0.0, 1.0, 0.0],  # +Y in local frame
+          force_scale_range=[4.1, 4.3]  # randomization range for velocity equivalent
       ),
   )
 
@@ -118,6 +119,7 @@ class JoystickWithGun(pupper_base.PupperEnv):
         config_overrides=config_overrides,
     )
     self._post_init()
+    self._torso_qpos_slice = slice(3, 7)
 
   def _post_init(self) -> None:
     self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
@@ -206,6 +208,13 @@ class JoystickWithGun(pupper_base.PupperEnv):
         key2, shape=(3,), minval=-self._cmd_a, maxval=self._cmd_a
     )
 
+    rng, key1, key2, rng = jax.random.split(rng, 4)
+    firearm_recoil_next_interval = jax.random.randint(key1, (), minval=80, maxval=150)
+    firearm_recoil_force = (
+    jax.random.uniform(key2, shape=(3,), minval=0.3, maxval=0.6)
+    * jp.array([0.0, 1.0, 0.0])  # Only +y direction
+    )
+
     info = {
         "rng": rng,
         "command": cmd,
@@ -225,7 +234,15 @@ class JoystickWithGun(pupper_base.PupperEnv):
         
         "firearm_recoil_timer": 0,
         "firearm_recoil_steps": 0,
+        "firearm_recoil_interval": jax.random.randint(
+            rng,
+            (),
+            minval=self._config.firearm_recoil.interval_range[0],
+            maxval=self._config.firearm_recoil.interval_range[1] + 1,
+        ),
         "firearm_recoil_warning": False,
+        "firearm_recoil_next_interval": firearm_recoil_next_interval,
+        "firearm_recoil_force": firearm_recoil_force,
     }
 
     metrics = {}
@@ -245,18 +262,20 @@ class JoystickWithGun(pupper_base.PupperEnv):
   #   state = state.replace(data=state.data.replace(qpos=qpos))
   #   return state
 
-  def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+  def step(self, state: mjx_env.State, action: jp.ndarray) -> mjx_env.State:
     if self._config.pert_config.enable:
-      state = self._maybe_apply_perturbation(state)
-    # state = self._reset_if_outside_bounds(state)
-    
+        state = self._maybe_apply_perturbation(state)
+
+    # Firearm recoil with randomness
+    rng = state.info["rng"]
     if self._config.firearm_recoil.enable:
-      state = self._apply_firearm_recoil(state)
+        rng, recoil_rng = jax.random.split(rng)
+        state = self._apply_firearm_recoil(state, recoil_rng)
+
+    rng, key1, key2 = jax.random.split(rng, 3)
 
     motor_targets = self._default_pose + action * self._config.action_scale
-    data = mjx_env.step(
-        self.mjx_model, state.data, motor_targets, self.n_substeps
-    )
+    data = mjx_env.step(self.mjx_model, state.data, motor_targets, self.n_substeps)
 
     contact = jp.array([
         collision.geoms_colliding(data, geom_id, self._floor_geom_id)
@@ -283,7 +302,9 @@ class JoystickWithGun(pupper_base.PupperEnv):
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
     state.info["steps_until_next_cmd"] -= 1
-    state.info["rng"], key1, key2 = jax.random.split(state.info["rng"], 3)
+
+    # Update command + rng
+    rng, key1, key2 = jax.random.split(rng, 3)
     state.info["command"] = jp.where(
         state.info["steps_until_next_cmd"] <= 0,
         self.sample_command(key1, state.info["command"]),
@@ -294,50 +315,64 @@ class JoystickWithGun(pupper_base.PupperEnv):
         jp.round(jax.random.exponential(key2) * 5.0 / self.dt).astype(jp.int32),
         state.info["steps_until_next_cmd"],
     )
+
+    # Save RNG state for next step
+    state.info["rng"] = rng
+
     state.info["feet_air_time"] *= ~contact
     state.info["last_contact"] = contact
     state.info["swing_peak"] *= ~contact
     for k, v in rewards.items():
-      state.metrics[f"reward/{k}"] = v
+        state.metrics[f"reward/{k}"] = v
     state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
 
     done = done.astype(reward.dtype)
     state = state.replace(data=data, obs=obs, reward=reward, done=done)
     return state
     
-  def _apply_firearm_recoil(self, state: mjx_env.State) -> mjx_env.State:
+  def _apply_firearm_recoil(self, state: mjx_env.State, rng: jax.Array) -> mjx_env.State: 
     cfg = self._config.firearm_recoil
     steps = state.info["firearm_recoil_steps"]
+    interval = state.info["firearm_recoil_interval"]
 
-    # Flag to indicate whether it's time to fire
-    apply_recoil = (steps == cfg.interval)
-
-    # Flag to indicate whether we're in warning zone
-    time_to_fire = (cfg.interval - steps) <= cfg.warning_duration
-
-    # Apply the warning flag
+    # Whether to apply recoil this step
+    apply_recoil = (steps == interval)
+    time_to_fire = (interval - steps) <= cfg.warning_duration
     state.info["firearm_recoil_warning"] = time_to_fire
 
+    # Prepare RNG
+    rng, rng_force, rng_interval = jax.random.split(rng, 3)
+
+    # Sample new force magnitude and interval
+    force_scale = jax.random.uniform(rng_force, minval=cfg.force_scale_range[0], maxval=cfg.force_scale_range[1])
+    new_interval = jax.random.randint(rng_interval, (), minval=cfg.interval_range[0], maxval=cfg.interval_range[1] + 1)
+
     def apply_force(state):
-        force = self._torso_mass * jp.array(cfg.velocity) / cfg.duration
+        duration = cfg.duration
+        local_direction = jp.array(cfg.direction)  # local frame direction (e.g. (0, 1, 0))
+        torso_quat = state.data.qpos[self._torso_qpos_slice]
+        world_direction = math.rotate(local_direction, torso_quat)
+        force = self._torso_mass * force_scale * world_direction / duration
+
         xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
         xfrc_applied = xfrc_applied.at[self._torso_body_id, :3].set(force)
+
         return state.replace(data=state.data.replace(xfrc_applied=xfrc_applied))
 
     def no_force(state):
         xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
         return state.replace(data=state.data.replace(xfrc_applied=xfrc_applied))
 
-    # Apply recoil if needed
+    # Conditionally apply force
     state = jax.lax.cond(cfg.enable & apply_recoil, apply_force, no_force, state)
 
-    # Reset or increment step counter
+    # Reset or increment recoil timer
     reset_timer = cfg.enable & apply_recoil
-    state.info["firearm_recoil_steps"] = jp.where(
-        reset_timer,
-        1,  # restart after fire
-        state.info["firearm_recoil_steps"] + 1,
-    )
+    state.info["firearm_recoil_steps"] = jp.where(reset_timer, 1, steps + 1)
+    state.info["firearm_recoil_interval"] = jp.where(reset_timer, new_interval, interval)
+
+    # Save updated RNG
+    state.info["rng"] = rng
 
     return state
 

@@ -60,7 +60,7 @@ def main():
     
     # --- 指向 ONNX 模型檔案 ---
     # 從腳本所在目錄開始構建路徑
-    onnx_model_path = script_dir / f"pupper_ppo_policy_{step}_normalized.onnx"
+    onnx_model_path = script_dir / f"pupper_ppo_policy_{step}_tf_converted.onnx"
 
     print(f"Attempting to load JAX parameters from: {pkl_path.as_posix()}")
     print(f"Attempting to load ONNX model from: {onnx_model_path.as_posix()}")

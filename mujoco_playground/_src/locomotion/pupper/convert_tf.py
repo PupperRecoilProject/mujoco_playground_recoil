@@ -1,5 +1,5 @@
 # ===================================================================
-#      JAX (Brax PPO) to ONNX Conversion via TensorFlow (Final Corrected Version)
+#      JAX to ONNX Conversion via TensorFlow (with .npz normalizer export)
 # ===================================================================
 
 # --- 導入 ---
@@ -9,15 +9,12 @@ import os
 import sys
 import inspect
 from etils import epath
-from typing import Any, Dict, Tuple, Sequence # 【修正】: 導入所有需要的類型
+from typing import Any, Dict, Tuple, Sequence
 
-# 【關鍵修正】: 在導入 JAX 和 TensorFlow 之前設置環境
-# 我們將使用 JAX 的內部機制來控制設備，這比 TensorFlow 的 API 更可靠
-# 設置這個環境變數會告訴 JAX 不要嘗試使用 GPU
+# 強制 JAX 和 TensorFlow 使用 CPU
 print("--- Forcing JAX and TensorFlow to use CPU to ensure compatibility ---")
 os.environ['JAX_PLATFORMS'] = 'cpu'
 
-# 現在導入 JAX 和 TensorFlow
 import jax
 import jax.numpy as jp
 import tensorflow as tf
@@ -25,11 +22,9 @@ from tensorflow.keras import layers
 import tf2onnx
 import onnx
 
-# 為了載入 Orbax checkpoint
 from orbax import checkpoint as ocp
 
-
-# --- 將輔助類和函數定義在 main 之外，使其成為全局可用的 ---
+# --- 將輔助類和函數定義在 main 之外 ---
 
 class NormalizationLayer(layers.Layer):
     """A Keras layer for applying observation normalization."""
@@ -39,9 +34,7 @@ class NormalizationLayer(layers.Layer):
         self.std = tf.constant(std, dtype=tf.float32)
 
     def call(self, inputs):
-        # 假設模型的輸入是一個字典，我們只關心 'state'
         state_input = inputs['state']
-        # 執行標準化
         return (state_input - self.mean) / (self.std + 1e-8)
 
 class KerasMLP(tf.keras.Model):
@@ -50,7 +43,6 @@ class KerasMLP(tf.keras.Model):
         super().__init__(name=name)
         self.mlp_layers = []
         for i, size in enumerate(layer_sizes):
-            # 只有最後一層的輸出沒有激活函數
             act = activation if i < len(layer_sizes) - 1 else None
             self.mlp_layers.append(layers.Dense(
                 size, activation=act, kernel_initializer='lecun_uniform', name=f"hidden_{i}"
@@ -72,58 +64,36 @@ def make_tf_policy_network(policy_obs_size, act_size, hidden_sizes, normalizer_m
     return tf.keras.Model(inputs=inputs, outputs=outputs, name="PupperPPOPolicy")
 
 def transfer_weights(jax_policy_params, tf_model):
-    """
-    Transfers weights from a JAX parameter pytree to a TensorFlow model.
-    This version correctly handles the (bias, kernel) order from Flax.
-    """
+    """Transfers weights from a JAX parameter pytree to a TensorFlow model."""
     tf_mlp_layers = [l for l in tf_model.get_layer('mlp_block').layers if isinstance(l, layers.Dense)]
     jax_weights_flat = jax.tree_util.tree_leaves(jax_policy_params)
-
-    print(f"  - Found {len(tf_mlp_layers)} Dense layers in TF model.")
-    print(f"  - Found {len(jax_weights_flat)} weight/bias arrays in JAX params.")
 
     if len(tf_mlp_layers) * 2 != len(jax_weights_flat):
         print("  [FATAL ERROR] Mismatch between number of TF layers and JAX weights!")
         return False
-
+    
     for i, tf_layer in enumerate(tf_mlp_layers):
-        # 【關鍵修正】: 交換 kernel 和 bias 的順序以匹配 Flax 的 Pytree 遍歷順序
-        # Flax/Linen 的 Dense 層參數在 tree_leaves 中通常是 bias 在前，kernel 在後。
         jax_bias = np.array(jax_weights_flat[i * 2])
         jax_kernel = np.array(jax_weights_flat[i * 2 + 1])
         
-        # 獲取 TensorFlow 層期望的權重形狀
         tf_kernel_shape = tf_layer.get_weights()[0].shape
-        
-        # 檢查 JAX kernel 的形狀是否需要轉置
         if jax_kernel.shape != tf_kernel_shape:
-            # 只有當轉置後的形狀匹配時，才進行轉置
             if jax_kernel.T.shape == tf_kernel_shape:
-                print(f"  - Transposing JAX kernel for layer {i} (JAX: {jax_kernel.shape}, TF: {tf_kernel_shape})")
                 jax_kernel = jax_kernel.T
             else:
-                print(f"  [FATAL ERROR] Kernel shape mismatch for layer '{tf_layer.name}'. "
-                      f"JAX shape {jax_kernel.shape} and TF shape {tf_kernel_shape} are incompatible.")
+                print(f"  [FATAL ERROR] Kernel shape mismatch for layer '{tf_layer.name}'.")
                 return False
-
-        print(f"  - Transferring to TF layer '{tf_layer.name}': kernel{jax_kernel.shape}, bias{jax_bias.shape}")
         
-        # 將正確的權重設置到 TensorFlow 層中
         tf_layer.set_weights([jax_kernel, jax_bias])
-        
     return True
-
-def print_pytree_structure(name: str, pytree: Any, indent=""):
-    """Recursively prints the structure of a Pytree."""
-    # ... (這個函數可以保留用於 debug) ...
-    pass
 
 
 def main():
     """Main function body."""
     # --- 步驟 0: 配置 ---
     print("\n--- Step 0: Configuration ---")
-    CHECKPOINT_DIR = epath.Path("checkpoints/PupperJoystickFlatTerrain").resolve() 
+    env_name = 'PupperJoystickFlatTerrain' # 我們將從這個環境的 checkpoint 中提取
+    CHECKPOINT_DIR = epath.Path("checkpoints/" + env_name).resolve() 
     POLICY_OBS_SIZE = 48 
     ACTION_SIZE = 12
     POLICY_HIDDEN_LAYER_SIZES = (512, 256, 128)
@@ -144,11 +114,25 @@ def main():
         print(f"  [FATAL ERROR] Could not load parameters: {e}")
         raise
 
-    # --- 步驟 2: 創建 TensorFlow Keras 模型 ---
-    print("\n--- Step 2: Building equivalent TensorFlow Keras model ---")
+    # --- 步驟 2: 創建 TensorFlow Keras 模型 (同時提取和保存 Normalizer 參數) ---
+    print("\n--- Step 2: Building TF model and exporting normalizer params ---")
     try:
         mean = np.array(normalizer_params.mean['state'])
         std = np.array(normalizer_params.std['state'])
+        print("  - Mean and Std extracted successfully.")
+
+        # ===================================================================
+        #           【關鍵新增功能】: 保存 mean 和 std 到 .npz 檔案
+        # ===================================================================
+        normalizer_output_path = f"pupper_ppo_normalizer_{latest_step}.npz"
+        np.savez(
+            normalizer_output_path,
+            mean_state=mean,
+            std_state=std
+        )
+        print(f"  - Normalizer parameters saved to: {normalizer_output_path}")
+        # ===================================================================
+
         tf_policy_network = make_tf_policy_network(
             policy_obs_size=POLICY_OBS_SIZE,
             act_size=ACTION_SIZE,
@@ -179,9 +163,9 @@ def main():
             opset=13,
             output_path=output_path
         )
-        print(f"\nConversion successful! ONNX model saved to: {output_path}")
+        print(f"\n  - Conversion successful! ONNX model saved to: {output_path}")
         onnx.checker.check_model(output_path)
-        print("ONNX model checked successfully.")
+        print("  - ONNX model checked successfully.")
     except Exception as e:
         print(f"  [ERROR] An error occurred during ONNX conversion: {e}")
         raise

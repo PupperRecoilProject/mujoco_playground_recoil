@@ -54,35 +54,36 @@ def default_config() -> config_dict.ConfigDict:
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
-              tracking_lin_vel=1.0,
-              tracking_ang_vel=0.5,
-              lin_vel_z=-0.5,
-              ang_vel_xy=-0.05,
-              orientation=-5.0,
-              dof_pos_limits=-1.0,
-              pose=0.5,
-              termination=-1.0,
-              stand_still=-1.0,
-              torques=-0.0002,
-              action_rate=-0.01,
-              energy=-0.001,
-              feet_clearance=-2.0,
-              feet_height=-0.2,
-              feet_slip=-0.1,
-              feet_air_time=0.1,
+              tracking_lin_vel=2.2,
+              tracking_ang_vel=1.0,
+              lin_vel_z=-0.5,       #-0.5
+              ang_vel_xy=-0.5,     #-0.05
+              orientation=-5.0,     #-5.0
+              dof_pos_limits=-1.0,  #-1.0
+              pose=2.5,
+              termination=-1.0,     #-1.0
+              stand_still=-1.0,     #-1.0
+              torques=-0.0001,      #-0.0001
+              action_rate=-0.01,    #-0.01
+              energy=-0.001,        #-0.001
+              feet_clearance=-2.0,  #-2.0
+              feet_height=-0.2,     #-0.2
+              feet_slip=-0.1,       #-0.1
+              feet_air_time=0.2,
           ),
           tracking_sigma=0.25,
           # Step 2: Adjust max_foot_height for the shorter Pupper
           max_foot_height=0.06, # Go1 was 0.1, Pupper legs are shorter
       ),
+
       pert_config=config_dict.create(
-          enable=False,
+          enable=True, #False
           velocity_kick=[0.0, 3.0],
           kick_durations=[0.05, 0.2],
           kick_wait_times=[1.0, 3.0],
       ),
       command_config=config_dict.create(
-          a=[0.5, 1, 0.6], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
+          a=[0.4, 0.7, 0.4], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
           b=[0.25, 0.9, 0.5],# b=[0.9, 0.25, 0.5]
       ),
   )
@@ -420,7 +421,7 @@ class JoystickSac(pupper_base.PupperEnv):
   def _reward_feet_air_time(self, air_time: jax.Array, first_contact: jax.Array, commands: jax.Array) -> jax.Array:
     cmd_norm = jp.linalg.norm(commands)
     # Reward air time around a target duration (e.g., 0.1s)
-    rew_air_time = jp.sum(jp.exp(-100 * jp.square(air_time - 0.1)) * first_contact)
+    rew_air_time = jp.sum(jp.exp(-100 * jp.square(air_time - 0.3)) * first_contact)
     rew_air_time *= (cmd_norm > 0.1)
     return rew_air_time
 

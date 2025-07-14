@@ -76,13 +76,13 @@ def default_config() -> config_dict.ConfigDict:
           max_foot_height=0.06, # Go1 was 0.1, Pupper legs are shorter
       ),
       pert_config=config_dict.create(
-          enable=False,
+          enable=False,  # False
           velocity_kick=[0.0, 3.0],
           kick_durations=[0.05, 0.2],
           kick_wait_times=[1.0, 3.0],
       ),
       command_config=config_dict.create(
-          a=[0.5, 1, 0.6], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
+          a=[0.4, 0.7, 0.4], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
           b=[0.25, 0.9, 0.5],# b=[0.9, 0.25, 0.5]
       ),
   )
@@ -348,6 +348,34 @@ class Joystick(pupper_base.PupperEnv):
   def _reward_tracking_lin_vel(self, commands: jax.Array, local_vel: jax.Array) -> jax.Array:
     lin_vel_error = jp.sum(jp.square(commands[:2] - local_vel[:2]))
     return jp.exp(-lin_vel_error / self._config.reward_config.tracking_sigma)
+  '''def _reward_tracking_lin_vel(self, commands: jax.Array, local_vel: jax.Array) -> jax.Array:
+    """
+    Calculates the reward for tracking linear velocity commands.
+    This version applies an extra penalty to lateral velocity errors
+    to encourage straight-line walking.
+    """
+    # 提取指令中的前進/後退(x)和橫向(y)速度
+    x_vel_cmd, y_vel_cmd = commands[0], commands[1]
+    
+    # 提取機器人實際的本地速度
+    x_vel_actual, y_vel_actual = local_vel[0], local_vel[1]
+    
+    # 分別計算前進方向和橫向的誤差的平方
+    forward_error_sq = jp.square(x_vel_actual - x_vel_cmd)
+    lateral_error_sq = jp.square(y_vel_actual - y_vel_cmd)
+    
+    # 【關鍵修改】: 為橫向誤差設置一個懲罰權重
+    # 這個值越大，AI 就越不願意產生橫向速度
+    # 5.0 是一個很好的起始點，意味著橫向誤差的「代價」是前進誤差的5倍
+    lateral_penalty_weight = 10.0
+    
+    # 計算加權後的總誤差
+    # 注意：我們只在有移動指令時才應該特別關注橫向誤差，但在指令為零時，任何速度都應被懲罰
+    # 所以這個加權是普適的。
+    total_error = forward_error_sq + lateral_penalty_weight * lateral_error_sq
+    
+    # 使用與之前相同的高斯函數來計算最終獎勵
+    return jp.exp(-total_error / self._config.reward_config.tracking_sigma)'''
 
   def _reward_tracking_ang_vel(self, commands: jax.Array, ang_vel: jax.Array) -> jax.Array:
     ang_vel_error = jp.square(commands[2] - ang_vel[2])
@@ -416,7 +444,7 @@ class Joystick(pupper_base.PupperEnv):
   def _reward_feet_air_time(self, air_time: jax.Array, first_contact: jax.Array, commands: jax.Array) -> jax.Array:
     cmd_norm = jp.linalg.norm(commands)
     # Reward air time around a target duration (e.g., 0.1s)
-    rew_air_time = jp.sum(jp.exp(-100 * jp.square(air_time - 0.1)) * first_contact)
+    rew_air_time = jp.sum(jp.exp(-100 * jp.square(air_time - 0.3)) * first_contact)
     rew_air_time *= (cmd_norm > 0.1)
     return rew_air_time
 

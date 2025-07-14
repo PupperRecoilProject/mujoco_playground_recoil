@@ -25,7 +25,7 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
 
   # --- Base RL config, used by default unless overridden below ---
   rl_config = config_dict.create(
-      num_timesteps=100_000_000,
+      num_timesteps=25_000_000, # 100_000_000 預設
       num_evals=10,
       reward_scaling=1.0,
       episode_length=env_config.episode_length,

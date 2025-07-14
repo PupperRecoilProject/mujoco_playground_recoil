@@ -444,7 +444,7 @@ class Joystick(pupper_base.PupperEnv):
   def _reward_feet_air_time(self, air_time: jax.Array, first_contact: jax.Array, commands: jax.Array) -> jax.Array:
     cmd_norm = jp.linalg.norm(commands)
     # Reward air time around a target duration (e.g., 0.1s)
-    rew_air_time = jp.sum(jp.exp(-100 * jp.square(air_time - 0.3)) * first_contact)
+    rew_air_time = jp.sum(jp.exp(-100 * jp.square(air_time - 0.1)) * first_contact)
     rew_air_time *= (cmd_norm > 0.1)
     return rew_air_time
 

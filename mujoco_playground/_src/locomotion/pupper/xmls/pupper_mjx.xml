@@ -19,7 +19,7 @@
   <!-- Default settings仿造自go1，但使用了Pupper的關節範圍和驅動器參數 -->
   <default>
     <default class="pupper">
-      <joint armature="0.00002" damping="0.0045"/>
+      <joint armature="0.01" damping="0.0045"/>
       <!-- 使用position驅動器，與go1保持一致 -->
       <position forcerange="-1.7 1.7" inheritrange="1" kp="1"/>
 

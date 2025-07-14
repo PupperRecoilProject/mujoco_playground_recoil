@@ -25,7 +25,7 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
 
   # --- Base RL config, used by default unless overridden below ---
   rl_config = config_dict.create(
-      num_timesteps=25_000_000, # 100_000_000 預設
+      num_timesteps=100_000_000, # 100_000_000 預設
       num_evals=10,
       reward_scaling=1.0,
       episode_length=env_config.episode_length,
@@ -99,7 +99,7 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
   elif env_name in ("PupperJoystickFlatTerrain", "PupperJoystickRoughTerrain", "PupperJoystickWithGun"):
     # We copy the Go1Joystick config as a starting point.
     # Pupper is smaller and lighter, so might need fewer timesteps.
-    rl_config.num_timesteps = 100_000_000 # Reduced from Go1's 200M
+    rl_config.num_timesteps = 25_000_000 # Reduced from Go1's 200M
     rl_config.num_evals = 64
     rl_config.num_resets_per_eval = 1
     rl_config.network_factory = config_dict.create(

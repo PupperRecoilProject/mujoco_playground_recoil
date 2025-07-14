@@ -22,7 +22,7 @@
       <joint armature="0.01" damping="0.0045"/>
       <!-- 使用position驅動器，與go1保持一致 -->
       <position forcerange="-1.7 1.7" inheritrange="1" kp="1" />
-      <general biastype="affine" gainprm="35.0 0 0" biasprm="0 -35.0 0"/>
+      <general biastype="none" />
 
       <!-- Pupper的關節定義 -->
       <default class="abduction"> <!-- 對應Pupper的abduction關節 -->

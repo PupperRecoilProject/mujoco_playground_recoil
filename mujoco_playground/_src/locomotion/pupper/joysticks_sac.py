@@ -54,21 +54,21 @@ def default_config() -> config_dict.ConfigDict:
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
-              tracking_lin_vel=5.0,
-              tracking_ang_vel=2.5,
+              tracking_lin_vel=2.2,
+              tracking_ang_vel=1.0,
               lin_vel_z=-0.5,       #-0.5
-              ang_vel_xy=-0.05,     #-0.05
+              ang_vel_xy=-0.5,     #-0.05
               orientation=-5.0,     #-5.0
-              dof_pos_limits=-0.5,  #-1.0
-              pose=2,
+              dof_pos_limits=-1.0,  #-1.0
+              pose=2.5,
               termination=-1.0,     #-1.0
-              stand_still=-0.1,     #-1.0
-              torques=-5e-5,      #-0.0001
-              action_rate=-0.005,    #-0.01
-              energy=-2e-4,        #-0.001
-              feet_clearance=-1.5,  #-2.0
+              stand_still=-1.0,     #-1.0
+              torques=-0.0001,      #-0.0001
+              action_rate=-0.01,    #-0.01
+              energy=-0.001,        #-0.001
+              feet_clearance=-2.0,  #-2.0
               feet_height=-0.2,     #-0.2
-              feet_slip=-0.2,       #-0.1
+              feet_slip=-0.1,       #-0.1
               feet_air_time=0.2,
           ),
           tracking_sigma=0.25,

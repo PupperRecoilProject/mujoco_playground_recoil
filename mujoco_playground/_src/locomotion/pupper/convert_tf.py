@@ -121,7 +121,7 @@ def main():
         std = np.array(normalizer_params.std['state'])
         print("  - Mean and Std extracted successfully.")
 
-        # ===================================================================
+        '''# ===================================================================
         #           【關鍵新增功能】: 保存 mean 和 std 到 .npz 檔案
         # ===================================================================
         normalizer_output_path = f"pupper_ppo_normalizer_{latest_step}.npz"
@@ -131,7 +131,7 @@ def main():
             std_state=std
         )
         print(f"  - Normalizer parameters saved to: {normalizer_output_path}")
-        # ===================================================================
+        # ==================================================================='''
 
         tf_policy_network = make_tf_policy_network(
             policy_obs_size=POLICY_OBS_SIZE,

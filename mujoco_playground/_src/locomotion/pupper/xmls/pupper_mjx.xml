@@ -19,19 +19,19 @@
   <!-- Default settings仿造自go1，但使用了Pupper的關節範圍和驅動器參數 -->
   <default>
     <default class="pupper">
-      <joint armature="0.0002" damping="0.005"/>
+      <joint armature="0.00002" damping="0.0045"/>
       <!-- 使用position驅動器，與go1保持一致 -->
-      <position forcerange="-1.0 1.0" inheritrange="1" kp="1"/>
-      
+      <position forcerange="-1.7 1.7" inheritrange="1" kp="1"/>
+
       <!-- Pupper的關節定義 -->
       <default class="abduction"> <!-- 對應Pupper的abduction關節 -->
-        <joint axis="0 1 0" range="-1.0472 1.0472" frictionloss="0.3"/>
+        <joint axis="0 1 0" range="-1.0472 1.0472" frictionloss="0.28"/>
       </default>
       <default class="hip"> <!-- 對應Pupper的hip關節 -->
-        <joint axis="1 0 0" range="-0.76166 3.81442" frictionloss="0.3"/>
+        <joint axis="1 0 0" range="-0.76166 3.81442" frictionloss="0.28"/>
       </default>
       <default class="knee"> <!-- 對應Pupper的knee關節 -->
-        <joint axis="1 0 0" range="-0.78540 1.65806" frictionloss="1.0"/>
+        <joint axis="1 0 0" range="-0.78540 1.65806" frictionloss="0.28"/>
       </default>
       
       <!-- 視覺與碰撞幾何體定義 -->

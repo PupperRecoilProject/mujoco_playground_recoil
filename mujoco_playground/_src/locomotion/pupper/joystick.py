@@ -39,7 +39,7 @@ def default_config() -> config_dict.ConfigDict:
       Kp=consts.MOTOR_KP,
       Kd=consts.MOTOR_KD,
       action_repeat=1,
-      action_scale=0.5,
+      action_scale=1, #0.5
       history_len=1, # This seems to be unused in the original code
       soft_joint_pos_limit_factor=0.95,
       noise_config=config_dict.create(
@@ -54,8 +54,8 @@ def default_config() -> config_dict.ConfigDict:
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
-              tracking_lin_vel=1.0,
-              tracking_ang_vel=0.5,
+              tracking_lin_vel=2.0, # 1.0
+              tracking_ang_vel=1.0, # 0.5
               lin_vel_z=-0.5,
               ang_vel_xy=-0.05,
               orientation=-5.0,

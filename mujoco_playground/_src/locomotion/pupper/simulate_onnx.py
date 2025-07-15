@@ -14,7 +14,7 @@ from termcolor import cprint
 # ===           1. 檔案路徑與核心設定                 ===
 # =======================================================
 XML_FILE = 'xmls/scene_mjx.xml'
-ONNX_MODEL_PATH = "pupper_ppo_policy_200540160_tf_converted.onnx"
+ONNX_MODEL_PATH = "pupper_ppo_policy_30965760_tf_converted.onnx"
 NUM_MOTORS = 12
 
 OBSERVATION_RECIPES = {
@@ -37,8 +37,8 @@ VELOCITY_ADJUST_STEP = 0.1
 
 class TuningParams:
     def __init__(self):
-        self.kp = 35.0
-        self.kd = 0.5
+        self.kp = 4.0
+        self.kd = 0.4
         self.action_scale = 0.5
         self.bias = 0.0
 

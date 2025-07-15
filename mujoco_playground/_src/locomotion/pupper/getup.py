@@ -41,7 +41,7 @@ def default_config() -> config_dict.ConfigDict:
       drop_from_height_prob=0.6,
       settle_time=0.5,
       action_repeat=1,
-      action_scale=0.12,
+      action_scale=0.12, # 0.12
       soft_joint_pos_limit_factor=0.95,
       energy_termination_threshold=np.inf,
       noise_config=config_dict.create(
@@ -55,15 +55,15 @@ def default_config() -> config_dict.ConfigDict:
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
-              orientation=1.0,
-              torso_height=2,
-              posture=1.0,
-              stand_still=1.0,
-              action_rate=-0.001,
+              orientation=5.0,
+              torso_height=10.0,
+              posture=0.1,
+              stand_still=0.1,
+              action_rate=0,
               dof_pos_limits=-0.1,
-              torques=-1e-5,
-              dof_acc=-2.5e-7,
-              dof_vel=-0.1,
+              torques=0,  #-1e-6
+              dof_acc=0,# -2.5e-7
+              dof_vel=0, # -0.1
           ),
       ),
   )

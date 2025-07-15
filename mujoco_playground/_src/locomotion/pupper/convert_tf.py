@@ -103,7 +103,7 @@ def main():
     latest_step = None
     try:
         steps = [int(p.name) for p in CHECKPOINT_DIR.iterdir() if p.is_dir() and p.name.isdigit()]
-        latest_step = max(steps)
+        latest_step = 30965760 # max(steps) if steps else None
         pkl_path = CHECKPOINT_DIR / str(latest_step) / "params.pkl"
         print(f"  - Loading from: {pkl_path}")
         with open(pkl_path, 'rb') as f:

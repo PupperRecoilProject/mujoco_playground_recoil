@@ -1,9 +1,9 @@
 <!-- =================================================================
      Pupper Model for MuJoCo Playground (仿造 Go1 結構)
+     慣性參數已於 2025-07-15 根據 URDF 檔案更新
      ================================================================= -->
-<mujoco model="pupper">
+<mujoco model="pupper_inertial_updated">
   <!-- Compiler settings仿造自go1，確保與框架相容 -->
-  <!-- 注意：你需要將Pupper的STL網格檔案放在 "assets" 資料夾中 -->
   <compiler angle="radian" meshdir="assets" autolimits="true"/>
 
   <!-- Physics options仿造自go1 -->
@@ -19,9 +19,9 @@
   <!-- Default settings仿造自go1，但使用了Pupper的關節範圍和驅動器參數 -->
   <default>
     <default class="pupper">
-      <joint armature="0.01" damping="0.0045"/>
+      <joint armature="0.01" damping="0.8"/>
       <!-- 使用position驅動器，與go1保持一致 -->
-      <position forcerange="-1.7 1.7" inheritrange="1" kp="4" />
+      <position forcerange="-1.7 1.7" inheritrange="1" kp="300" />
       <general biastype="none" />
 
       <!-- Pupper的關節定義 -->
@@ -62,88 +62,107 @@
 
   <worldbody>
     <light name="spotlight" mode="targetbodycom" target="torso" pos="3 0 4"/>
-    <!-- 重要：主體名稱使用 "torso" (來自pupper) 而不是 "trunk" (來自go1) -->
     <body name="torso" pos="0 0 0.2" childclass="pupper">
       <camera name="track" pos="0.8 -1.0 0.5" xyaxes="0.707 0.707 0 -0.354 0.354 0.866" mode="trackcom"/>
       <site name="head" pos="0.15 0 0" rgba="1 0 0 1" size="0.02" group="5"/>
-      <!-- Pupper的慣性參數 -->
-      <inertial pos="0.00109 -0.074 0" mass="0.7833" diaginertia="0.0003688 0.002508 0.002674"/>
+      <!-- [MODIFIED] 根據 URDF (pupper_v2_dji_chassis) 更新慣性參數 -->
+      <inertial pos="0 -0.048 -0.00964" mass="0.991" fullinertia="0.00626 0.00175 0.00678 2e-05 0 2e-05" />
       <freejoint/>
       <geom class="visual" mesh="body"/>
-      <!-- 簡化了軀幹的碰撞體，可以根據需要添加更多 -->
       <geom class="collision" type="box" size="0.06 0.11 0.03" pos="0 -0.07 0"/>
-      <!-- IMU site, 命名與go1保持一致 -->
       <site name="imu" pos="0 -0.122542 0" size="0.01" group="5"/>
 
       <!-- ============== LEGS ============== -->
-      <!-- 腿部結構仿造go1的命名 (FR_hip, FR_thigh, FR_calf) 以便與python程式碼相容 -->
       <!-- FR Leg -->
       <body name="FR_hip" pos="-0.046891 -0.203946 -0.0064">
-        <joint class="abduction" name="FR_hip_joint"/> <!-- Mapped from abduction_front_right -->
+        <!-- [ADDED] 根據 URDF (rightFrontLeg) 新增慣性參數 -->
+        <inertial pos="0.0139 -0.0269 0" mass="0.106" diaginertia="2e-05 6e-05 6e-05" />
+        <joint class="abduction" name="FR_hip_joint"/>
         <geom class="visual" mesh="Hip_R"/>
         <body name="FR_thigh" pos="-0.037 0.028 0" axisangle="1 0 0 0.7854">
-          <joint class="hip" name="FR_thigh_joint"/> <!-- Mapped from hip_front_right -->
+          <!-- [ADDED] 根據 URDF (rightFrontUpperLeg) 新增慣性參數 -->
+          <inertial pos="0.0172 0 -0.061" mass="0.142" diaginertia="0.00014 0.00016 3e-05" />
+          <joint class="hip" name="FR_thigh_joint"/>
           <geom class="visual" mesh="Upper_Leg_R"/>
           <body name="FR_calf" pos="0 0 -0.08" axisangle="1 0 0 -1.57">
-            <joint class="knee" name="FR_calf_joint"/> <!-- Mapped from knee_front_right -->
+            <!-- [ADDED] 根據 URDF (rightFrontLowerLeg) 新增慣性參數 -->
+            <inertial pos="-0.00588 -0.00075 -0.0658" mass="0.038" diaginertia="0.00018 0.00018 2e-05" />
+            <joint class="knee" name="FR_calf_joint"/>
             <geom class="visual" mesh="Lower_Leg_R"/>
             <geom name="FR" class="foot" pos="0.003475 0 -0.11"/>
-            <site name="FR" pos="0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
+            <site name="FR_site" pos="0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
           </body>
         </body>
       </body>
       
       <!-- FL Leg -->
       <body name="FL_hip" pos="0.047109 -0.203946 -0.0064">
-        <joint class="abduction" name="FL_hip_joint"/> <!-- Mapped from abduction_front_left -->
+        <!-- [ADDED] 根據 URDF (leftFrontLeg) 新增慣性參數 -->
+        <inertial pos="0.0139 0.0254 0" mass="0.106" diaginertia="2e-05 6e-05 6e-05" />
+        <joint class="abduction" name="FL_hip_joint"/>
         <geom class="visual" mesh="Hip_L"/>
         <body name="FL_thigh" pos="0.037 0.028 0" axisangle="1 0 0 0.7854">
-          <joint class="hip" name="FL_thigh_joint"/> <!-- Mapped from hip_front_left -->
+          <!-- [ADDED] 根據 URDF (leftFrontUpperLeg) 新增慣性參數 -->
+          <inertial pos="0.0172 0 -0.061" mass="0.142" diaginertia="0.00014 0.00016 3e-05" />
+          <joint class="hip" name="FL_thigh_joint"/>
           <geom class="visual" mesh="Upper_Leg_L"/>
           <body name="FL_calf" pos="0 0 -0.08" axisangle="1 0 0 -1.57">
-            <joint class="knee" name="FL_calf_joint"/> <!-- Mapped from knee_front_left -->
+            <!-- [ADDED] 根據 URDF (leftFrontLowerLeg) 新增慣性參數 -->
+            <inertial pos="0.00558 -0.00075 -0.0658" mass="0.038" diaginertia="0.00018 0.00018 2e-05" />
+            <joint class="knee" name="FL_calf_joint"/>
             <geom class="visual" mesh="Lower_Leg_L"/>
             <geom name="FL" class="foot" pos="-0.003475 0 -0.11"/>
-            <site name="FL" pos="-0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
+            <site name="FL_site" pos="-0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
           </body>
         </body>
       </body>
 
-      <!-- RR Leg (注意，Pupper模型中後腿和前腿位置不同，這裡使用pupper的座標) -->
+      <!-- RR Leg -->
       <body name="RR_hip" pos="-0.046896 -0.004096 -0.0064">
-        <joint class="abduction" name="RR_hip_joint"/> <!-- Mapped from abduction_hind_right -->
+        <!-- [ADDED] 根據 URDF (rightRearLeg) 新增慣性參數 -->
+        <inertial pos="0.0139 -0.0269 0" mass="0.106" diaginertia="2e-05 6e-05 6e-05" />
+        <joint class="abduction" name="RR_hip_joint"/>
         <geom class="visual" mesh="Hip_R"/>
         <body name="RR_thigh" pos="-0.037 0.028 0" axisangle="1 0 0 0.7854">
-          <joint class="hip" name="RR_thigh_joint"/> <!-- Mapped from hip_hind_right -->
+          <!-- [ADDED] 根據 URDF (rightRearUpperLeg) 新增慣性參數 -->
+          <inertial pos="0.0172 0 -0.061" mass="0.142" diaginertia="0.00014 0.00016 3e-05" />
+          <joint class="hip" name="RR_thigh_joint"/>
           <geom class="visual" mesh="Upper_Leg_R"/>
           <body name="RR_calf" pos="0 0 -0.08" axisangle="1 0 0 -1.57">
-            <joint class="knee" name="RR_calf_joint"/> <!-- Mapped from knee_hind_right -->
+            <!-- [ADDED] 根據 URDF (rightRearLowerLeg) 新增慣性參數 -->
+            <inertial pos="-0.00588 -0.00075 -0.0658" mass="0.038" diaginertia="0.00018 0.00018 2e-05" />
+            <joint class="knee" name="RR_calf_joint"/>
             <geom class="visual" mesh="Lower_Leg_R"/>
             <geom name="RR" class="foot" pos="0.003475 0 -0.11"/>
-            <site name="RR" pos="0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
+            <site name="RR_site" pos="0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
           </body>
         </body>
       </body>
 
       <!-- RL Leg -->
       <body name="RL_hip" pos="0.047104 -0.004096 -0.0064">
-        <joint class="abduction" name="RL_hip_joint"/> <!-- Mapped from abduction_hind_left -->
+        <!-- [ADDED] 根據 URDF (leftRearLeg) 新增慣性參數 -->
+        <inertial pos="0.0139 0.0254 0" mass="0.106" diaginertia="2e-05 6e-05 6e-05" />
+        <joint class="abduction" name="RL_hip_joint"/>
         <geom class="visual" mesh="Hip_L"/>
         <body name="RL_thigh" pos="0.037 0.028 0" axisangle="1 0 0 0.7854">
-          <joint class="hip" name="RL_thigh_joint"/> <!-- Mapped from hip_hind_left -->
+          <!-- [ADDED] 根據 URDF (leftRearUpperLeg) 新增慣性參數 -->
+          <inertial pos="0.0172 0 -0.061" mass="0.142" diaginertia="0.00014 0.00016 3e-05" />
+          <joint class="hip" name="RL_thigh_joint"/>
           <geom class="visual" mesh="Upper_Leg_L"/>
           <body name="RL_calf" pos="0 0 -0.08" axisangle="1 0 0 -1.57">
-            <joint class="knee" name="RL_calf_joint"/> <!-- Mapped from knee_hind_left -->
+            <!-- [ADDED] 根據 URDF (leftRearLowerLeg) 新增慣性參數 -->
+            <inertial pos="0.00558 -0.00075 -0.0658" mass="0.038" diaginertia="0.00018 0.00018 2e-05" />
+            <joint class="knee" name="RL_calf_joint"/>
             <geom class="visual" mesh="Lower_Leg_L"/>
             <geom name="RL" class="foot" pos="-0.003475 0 -0.11"/>
-            <site name="RL" pos="-0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
+            <site name="RL_site" pos="-0.003475 0 -0.11" type="sphere" size="0.009525" group="5"/>
           </body>
         </body>
       </body>
     </body>
   </worldbody>
 
-  <!-- Actuators仿造go1的結構和命名 -->
   <actuator>
     <position class="abduction" name="FR_hip" joint="FR_hip_joint"/>
     <position class="hip" name="FR_thigh" joint="FR_thigh_joint"/>
@@ -159,8 +178,8 @@
     <position class="knee" name="RL_calf" joint="RL_calf_joint"/>
   </actuator>
 
-  <!-- Sensors, 直接從go1複製並適配，確保觀察空間一致 -->
   <sensor>
+    <!-- 為了避免命名衝突，將 site 的名稱從 FR, FL... 改為 FR_site, FL_site... -->
     <gyro site="imu" name="gyro"/>
     <velocimeter site="imu" name="local_linvel"/>
     <accelerometer site="imu" name="accelerometer"/>
@@ -170,14 +189,14 @@
     <framelinvel objtype="site" objname="imu" name="global_linvel"/>
     <frameangvel objtype="site" objname="imu" name="global_angvel"/>
     <framequat objtype="site" objname="imu" name="orientation"/>
-    <framelinvel objtype="site" objname="FR" name="FR_global_linvel"/>
-    <framelinvel objtype="site" objname="FL" name="FL_global_linvel"/>
-    <framelinvel objtype="site" objname="RR" name="RR_global_linvel"/>
-    <framelinvel objtype="site" objname="RL" name="RL_global_linvel"/>
-    <framepos objtype="site" objname="FR" name="FR_pos" reftype="site" refname="imu"/>
-    <framepos objtype="site" objname="FL" name="FL_pos" reftype="site" refname="imu"/>
-    <framepos objtype="site" objname="RR" name="RR_pos" reftype="site" refname="imu"/>
-    <framepos objtype="site" objname="RL" name="RL_pos" reftype="site" refname="imu"/>
+    <framelinvel objtype="site" objname="FR_site" name="FR_global_linvel"/>
+    <framelinvel objtype="site" objname="FL_site" name="FL_global_linvel"/>
+    <framelinvel objtype="site" objname="RR_site" name="RR_global_linvel"/>
+    <framelinvel objtype="site" objname="RL_site" name="RL_global_linvel"/>
+    <framepos objtype="site" objname="FR_site" name="FR_pos" reftype="site" refname="imu"/>
+    <framepos objtype="site" objname="FL_site" name="FL_pos" reftype="site" refname="imu"/>
+    <framepos objtype="site" objname="RR_site" name="RR_pos" reftype="site" refname="imu"/>
+    <framepos objtype="site" objname="RL_site" name="RL_pos" reftype="site" refname="imu"/>
     <framepos objtype="site" objname="head" name="head_pos"/>
   </sensor>
 </mujoco>

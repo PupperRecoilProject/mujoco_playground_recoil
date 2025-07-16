@@ -71,9 +71,9 @@ class PupperEnv(mjx_env.MjxEnv):
     # Modify PD gains. The logic remains the same.
     # We assume 'config' will provide 'Kd' and 'Kp'.
     # dof_damping[6:] affects all movable joints after the 6-DoF freejoint.
-    self._mj_model.dof_damping[6:] = self._config.Kd
-    self._mj_model.actuator_gainprm[:, 0] = self._config.Kp
-    self._mj_model.actuator_biasprm[:, 1] = -self._config.Kp
+    #self._mj_model.dof_damping[6:] = self._config.Kd
+    #self._mj_model.actuator_gainprm[:, 0] = self._config.Kp
+    #self._mj_model.actuator_biasprm[:, 1] = -self._config.Kp
 
     # Increase offscreen framebuffer size to render at higher resolutions.
     self._mj_model.vis.global_.offwidth = 3840

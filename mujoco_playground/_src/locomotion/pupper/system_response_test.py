@@ -3,15 +3,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import re
-import optuna
 import time
 
 # ==============================================================================
-#  使用說明 (v13 - 專注優化 Lower Leg)
+#  使用說明 (v28.2 - 最終手動微調版，修正 API 兼容性)
 # ==============================================================================
-# 1. 確保已安裝 optuna: `pip install optuna`
-# 2. 此腳本將集中所有計算資源，只為 "FR_calf_joint" 尋找最佳參數。
-# 3. 整個過程無中斷，結束後會生成最終報告和可複製的 XML 片段。
+# 1. 此腳本用於最後的專家微調階段。
+# 2. 直接手動修改您的 'pupper_mjx.xml' 檔案中的 kp 和 dampratio 值。
+# 3. 運行此腳本，觀察生成的圖表和性能指標，以判斷您的修改是否達標。
 # ==============================================================================
 
 # --- 全局配置 ---
@@ -19,80 +18,59 @@ CONFIG = {
     "MODEL_PATH": "./xmls/pupper_mjx.xml",
     "SIMULATION_DURATION": 2.0,
     "STEP_TARGET_ANGLE": 1.0,
-    # [ACTION] 專注於我們擁有真實數據的這一個關節
-    "JOINTS_TO_OPTIMIZE": [
-        "FR_calf_joint",
-    ],
-    # [ACTION] 增加嘗試次數，以進行更精細的搜索
-    "N_TRIALS_PER_JOINT": 1000, 
+    "JOINT_TO_TEST": "FR_calf_joint", 
 }
 
-# --- 優化目標 (來自您的真實世界數據 for lower leg) ---
+# --- 我們的最終目標 (用於心裡對比) ---
 TARGET_METRICS = {
-    'overshoot_pct': 0.76,
+    'overshoot_pct': 0.76, 
     'rise_time': 0.12,
-    'settling_time': 0.16,
+    'peak_time': 0.18, 
+    'settling_time': 0.22, 
     'peak_velocity': 7.46,
 }
 
-# --- 成本函數權重 ---
-COST_WEIGHTS = {
-    'overshoot_pct': 2.0, 'rise_time': 3.0,
-    'settling_time': 1.0, 'peak_velocity': 0.5,
-}
-
-# [MODIFIED] 函數新增了 armature 參數
-def load_model_with_fixed_base(model_path, joint_name_to_tune, kp, damping, armature):
+def load_model_with_fixed_base(model_path):
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"錯誤: 模型檔案 '{model_path}' 不存在。")
     with open(model_path, 'r') as f:
         xml_string = f.read()
-    xml_string = xml_string.replace('meshdir="assets"', 'meshdir="xmls/assets"')
-    xml_string = xml_string.replace('<freejoint/>', '<!-- <freejoint/> removed -->')
     
-    joint_class_map = {'hip': 'abduction', 'thigh': 'hip', 'calf': 'knee'}
-    class_to_tune = None
-    for keyword, classname in joint_class_map.items():
-        if keyword in joint_name_to_tune:
-            class_to_tune = classname
-            break
-    if not class_to_tune:
-        raise ValueError(f"無法為關節 '{joint_name_to_tune}' 找到對應的 class")
-
-    # 動態設定 Kp, Damping, 和 Armature
-    # 注意: 我們現在只會修改 "knee" 這個 class
-    xml_string = re.sub(rf'(<default class="{class_to_tune}">.*?<joint.*?damping=")[^"]*(".*)', rf'\g<1>{damping}\g<2>', xml_string, flags=re.S)
-    xml_string = re.sub(rf'(<default class="{class_to_tune}">.*?<position.*?kp=")[^"]*(".*)', rf'\g<1>{kp}\g<2>', xml_string, flags=re.S)
-    xml_string = re.sub(rf'(<default class="{class_to_tune}">.*?<joint.*?armature=")[^"]*(".*)', rf'\g<1>{armature}\g<2>', xml_string, flags=re.S)
+    xml_string = xml_string.replace('<freejoint/>', '<!-- <freejoint/> removed for testing -->')
     
     model = mujoco.MjModel.from_xml_string(xml_string)
     return model
 
-# ... 其他輔助函數保持不變 ...
+# 模擬、分析函數與之前完全相同
 def run_step_response_simulation(model, data, joint_name, target_pos, duration):
     joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
     actuator_name = joint_name.replace('_joint', '')
     actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name)
     initial_qpos = data.qpos.copy()
+
     dof_adrs = model.jnt_dofadr
     dof_adrs_ext = np.append(dof_adrs, model.nv)
     dof_nums = dof_adrs_ext[1:] - dof_adrs_ext[:-1]
     movable_joint_ids = [i for i, num in enumerate(dof_nums) if num > 0]
+    
     joint_to_actuator_map = {}
     for i in range(model.nu):
-        if model.actuator_trntype[i] == mujoco.mjtTrn.mjTRN_JOINT:
-            joint_to_actuator_map[model.actuator_trnid[i, 0]] = i
+        target_joint_id = model.actuator_trnid[i, 0]
+        joint_to_actuator_map[target_joint_id] = i
+
     times, positions, velocities = [], [], []
+    mujoco.mj_resetData(model, data)
     while data.time < duration:
         for jid in movable_joint_ids:
             if jid != joint_id:
-                act_id_to_lock = joint_to_actuator_map.get(jid, -1)
-                if act_id_to_lock > -1:
+                act_id_to_lock = joint_to_actuator_map.get(jid)
+                if act_id_to_lock is not None and act_id_to_lock < model.nu:
                     data.ctrl[act_id_to_lock] = initial_qpos[model.jnt_qposadr[jid]]
         data.ctrl[actuator_id] = target_pos
         times.append(data.time)
         positions.append(data.qpos[model.jnt_qposadr[joint_id]])
         velocities.append(data.qvel[model.jnt_dofadr[joint_id]])
+        
         mujoco.mj_step(model, data)
     return np.array(times), np.array(positions), np.array(velocities)
 
@@ -126,6 +104,7 @@ def analyze_response(times, positions, velocities, target):
     metrics['peak_velocity'] = np.max(np.abs(velocities))
     return metrics
 
+# [MODIFIED] 簡化繪圖函數，不再從模型中讀取易出錯的 API 屬性
 def plot_response(times, positions, velocities, metrics, joint_name, target):
     fig, ax1 = plt.subplots(figsize=(12, 7))
     ax1.plot(times, positions, '.-', color='royalblue', label='Actual Position')
@@ -155,118 +134,48 @@ def plot_response(times, positions, velocities, metrics, joint_name, target):
     lines, labels = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax2.legend(lines + lines2, labels + labels2, loc='lower right')
-    plt.title(f'Optimized Step Response - Joint: {joint_name}', fontsize=16)
+    title_str = (f'Manual Tuning Result - Joint: {joint_name}') # 簡化標題
+    plt.title(title_str, fontsize=16)
     fig.tight_layout()
     plt.show()
 
-# ==============================================================================
-#                      新的、模組化的優化函數
-# ==============================================================================
-def optimize_joint_parameters(joint_name_to_optimize, n_trials):
-    print(f"\n{'='*60}")
-    print(f"🚀 開始為關節 '{joint_name_to_optimize}' 自動尋找最佳參數 ({n_trials} 次嘗試)...")
-    start_time = time.time()
-
-    def objective(trial):
-        kp = trial.suggest_float("kp", 50, 800)
-        damping = trial.suggest_float("damping", 0.1, 5.0)
-        armature = trial.suggest_float("armature", 0.001, 0.1)
-
-        try:
-            model = load_model_with_fixed_base(
-                CONFIG["MODEL_PATH"], joint_name_to_optimize, kp, damping, armature
-            )
-            data = mujoco.MjData(model)
-            times, positions, velocities = run_step_response_simulation(
-                model, data, joint_name_to_optimize, CONFIG["STEP_TARGET_ANGLE"], CONFIG["SIMULATION_DURATION"]
-            )
-        except Exception:
-            return float('inf')
-
-        sim_metrics = analyze_response(times, positions, velocities, CONFIG["STEP_TARGET_ANGLE"])
-        if not sim_metrics: return float('inf')
-
-        cost = 0
-        for key, target_val in TARGET_METRICS.items():
-            sim_val = sim_metrics.get(key, float('inf'))
-            weight = COST_WEIGHTS.get(key, 1.0)
-            error = ((sim_val - target_val) / (target_val + 1e-6))**2
-            cost += weight * error
-        
-        return cost
-
-    study = optuna.create_study(direction='minimize')
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study.optimize(objective, n_trials=n_trials, n_jobs=-1)
-    optuna.logging.set_verbosity(optuna.logging.INFO)
-
-    end_time = time.time()
-    print(f"✅ 優化完成！耗時 {end_time - start_time:.2f} 秒。")
-
-    best_params = study.best_trial.params
-    print(f"  - 找到的最佳參數: kp={best_params['kp']:.2f}, damping={best_params['damping']:.2f}, armature={best_params['armature']:.4f}")
-    print(f"  - 最低成本值: {study.best_trial.value:.4f}")
-    
-    return best_params
-
-# ==============================================================================
-#                           新的「總指揮官」主函數
-# ==============================================================================
 def main():
-    all_best_params = {}
+    print(f"🔧 開始手動調校測試...")
+    print(f"   - 正在載入模型: {CONFIG['MODEL_PATH']}")
+    print(f"   - 測試目標關節: {CONFIG['JOINT_TO_TEST']}")
 
-    # 只對我們指定的單一關節進行優化
-    joint_name = CONFIG["JOINTS_TO_OPTIMIZE"][0]
-    best_params = optimize_joint_parameters(
-        joint_name, 
-        CONFIG["N_TRIALS_PER_JOINT"]
-    )
-    all_best_params[joint_name] = best_params
+    try:
+        model = load_model_with_fixed_base(CONFIG["MODEL_PATH"])
+        data = mujoco.MjData(model)
+        print(f"✅ 模型載入成功！")
+    except Exception as e:
+        print(f"❌ 錯誤: 無法載入或處理模型檔案 '{CONFIG['MODEL_PATH']}'.")
+        print(f"   詳細錯誤: {e}")
+        return
 
-    print(f"\n{'='*60}")
-    print("🎉🎉🎉 參數優化已全部完成！🎉🎉🎉")
-    print(f"{'='*60}")
-    print("最終找到的最佳參數總結：")
-    
-    joint_class_map = {'hip': 'abduction', 'thigh': 'hip', 'calf': 'knee'}
-    
-    # 只打印和繪製我們優化的那個關節
-    params = all_best_params[joint_name]
-    kp_val, d_val, arm_val = params['kp'], params['damping'], params['armature']
-    print(f"\n關節: {joint_name}")
-    print(f"  - kp:       {kp_val:.4f}")
-    print(f"  - damping:  {d_val:.4f}")
-    print(f"  - armature: {arm_val:.4f}")
+    joint_name = CONFIG["JOINT_TO_TEST"]
 
-    class_to_tune = None
-    for keyword, classname in joint_class_map.items():
-        if keyword in joint_name:
-            class_to_tune = classname
-            break
-    
-    if class_to_tune:
-        snippet = f'''
-  <!-- {joint_name} - Optimized Parameters -->
-  <default class="{class_to_tune}">
-    <joint damping="{d_val:.4f}" armature="{arm_val:.4f}"/> 
-    <position kp="{kp_val:.4f}"/> 
-  </default>'''
-        print(f"\n{'='*60}")
-        print("您可以將以下程式碼片段直接複製到您的 XML 檔案的 <default> 區塊中，\n以更新 'knee' class 的設定：")
-        print(f"--- 複製開始 ---")
-        print(snippet)
-        print(f"--- 複製結束 ---")
-        print(f"{'='*60}")
-    
-    print("\n📈 正在為該關節繪製其最佳響應圖...")
-    model = load_model_with_fixed_base(CONFIG["MODEL_PATH"], joint_name, params['kp'], params['damping'], params['armature'])
-    data = mujoco.MjData(model)
+    print("\n🚀 正在執行模擬...")
     times, positions, velocities = run_step_response_simulation(
         model, data, joint_name, CONFIG["STEP_TARGET_ANGLE"], CONFIG["SIMULATION_DURATION"]
     )
+    
+    print("📊 正在分析結果...")
     metrics = analyze_response(times, positions, velocities, CONFIG["STEP_TARGET_ANGLE"])
+    
+    print("\n--- 手動調校結果報告 ---")
+    print(f"上升時間 (10%-90%): {metrics.get('rise_time', 'N/A'):.4f} s  (目標: ~{TARGET_METRICS['rise_time']:.2f}s)")
+    print(f"峰值時間:           {metrics.get('peak_time', 'N/A'):.4f} s  (目標: ~{TARGET_METRICS['peak_time']:.2f}s)")
+    print(f"超調量:             {metrics.get('overshoot_pct', 'N/A'):.2f} %   (目標: ~{TARGET_METRICS['overshoot_pct']:.2f}%)")
+    print(f"整定時間 (±2%):     {metrics.get('settling_time', 'N/A'):.4f} s  (目標: ~{TARGET_METRICS['settling_time']:.2f}s)")
+    print(f"峰值速度:           {metrics.get('peak_velocity', 'N/A'):.4f} rad/s (目標: ~{TARGET_METRICS['peak_velocity']:.2f} rad/s)")
+    print("------------------------\n")
+    
+    print("📈 正在繪製最終響應圖...")
+    # [MODIFIED] 簡化函數呼叫
     plot_response(times, positions, velocities, metrics, joint_name, CONFIG["STEP_TARGET_ANGLE"])
-
+    
+    print("\n✅ 測試完成。請查看彈出的圖表。")
 
 if __name__ == "__main__":
     main()

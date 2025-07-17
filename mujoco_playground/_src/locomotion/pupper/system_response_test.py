@@ -2,15 +2,18 @@ import mujoco
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import re
-import time
+import math
 
 # ==============================================================================
-#  使用說明 (v28.2 - 最終手動微調版，修正 API 兼容性)
+#  使用說明 (v29.1 - 官方文件校驗版)
 # ==============================================================================
-# 1. 此腳本用於最後的專家微調階段。
-# 2. 直接手動修改您的 'pupper_mjx.xml' 檔案中的 kp 和 dampratio 值。
-# 3. 運行此腳本，觀察生成的圖表和性能指標，以判斷您的修改是否達標。
+# 1. 本腳本適用於在 XML 中分離了物理屬性與控制的場景。
+# 2. XML 中的 <joint> 標籤負責定義物理屬性 (如 damping, armature)。
+#    物理引擎會自動處理它們，Python 代碼無需關心。
+# 3. XML 中的 <general gaintype="fixed"> 標籤定義了直接扭矩控制。
+# 4. Python 程式碼實現了一個理想的 PD 控制器，其輸出 (torque) 會被施加到
+#    這個帶有物理屬性的關節上。
+# 5. 調校時，請直接修改下方 CONFIG 中的 KP 和 DAMPING_RATIO。
 # ==============================================================================
 
 # --- 全局配置 ---
@@ -19,6 +22,10 @@ CONFIG = {
     "SIMULATION_DURATION": 2.0,
     "STEP_TARGET_ANGLE": 1.0,
     "JOINT_TO_TEST": "FR_calf_joint", 
+    
+    # [控制參數] 在此調校你的 PD 控制器性能
+    "KP": 10.0,  # 比例增益：決定反應速度和力量，越大反應越快
+    "DAMPING_RATIO": 0.3, # 阻尼比：決定系統的穩定性，越大越穩定，越小越容易超調
 }
 
 # --- 我們的最終目標 (用於心裡對比) ---
@@ -30,51 +37,61 @@ TARGET_METRICS = {
     'peak_velocity': 7.46,
 }
 
+# 加載模型函數不變
 def load_model_with_fixed_base(model_path):
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"錯誤: 模型檔案 '{model_path}' 不存在。")
     with open(model_path, 'r') as f:
         xml_string = f.read()
-    
     xml_string = xml_string.replace('<freejoint/>', '<!-- <freejoint/> removed for testing -->')
-    
     model = mujoco.MjModel.from_xml_string(xml_string)
     return model
 
-# 模擬、分析函數與之前完全相同
-def run_step_response_simulation(model, data, joint_name, target_pos, duration):
+# 模擬函數的邏輯被官方文件證實是正確的
+def run_manual_pd_simulation(model, data, joint_name, target_pos, duration, kp, damping_ratio):
     joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
     actuator_name = joint_name.replace('_joint', '')
     actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name)
-    initial_qpos = data.qpos.copy()
-
-    dof_adrs = model.jnt_dofadr
-    dof_adrs_ext = np.append(dof_adrs, model.nv)
-    dof_nums = dof_adrs_ext[1:] - dof_adrs_ext[:-1]
-    movable_joint_ids = [i for i, num in enumerate(dof_nums) if num > 0]
     
-    joint_to_actuator_map = {}
-    for i in range(model.nu):
-        target_joint_id = model.actuator_trnid[i, 0]
-        joint_to_actuator_map[target_joint_id] = i
+    qpos_adr = model.jnt_qposadr[joint_id]
+    dof_adr = model.jnt_dofadr[joint_id]
 
+    # 計算 Kd (微分增益)。這個 Kd 是你「控制器」的阻尼項，
+    # 它與 XML 中 <joint> 的物理 damping 是獨立的。
+    kd = 2 * damping_ratio * math.sqrt(kp)
+    print(f"--- 控制器參數 ---")
+    print(f"Kp = {kp:.2f}, Damping Ratio = {damping_ratio:.2f} -> 計算出的控制器 Kd = {kd:.2f}")
+    
     times, positions, velocities = [], [], []
     mujoco.mj_resetData(model, data)
+    data.ctrl[:] = 0.0
+
     while data.time < duration:
-        for jid in movable_joint_ids:
-            if jid != joint_id:
-                act_id_to_lock = joint_to_actuator_map.get(jid)
-                if act_id_to_lock is not None and act_id_to_lock < model.nu:
-                    data.ctrl[act_id_to_lock] = initial_qpos[model.jnt_qposadr[jid]]
-        data.ctrl[actuator_id] = target_pos
+        # --- PD 控制器核心邏輯 ---
+        current_pos = data.qpos[qpos_adr]
+        current_vel = data.qvel[dof_adr]
+        
+        pos_error = target_pos - current_pos
+        
+        # 計算控制器應輸出的扭矩
+        # 公式: torque = Kp * 位置誤差 - Kd * 當前速度
+        pd_torque = kp * pos_error - kd * current_vel
+        
+        # 將計算出的扭矩賦值給 ctrl。
+        # MuJoCo 會將此扭矩施加到由 XML 定義的、具有物理屬性的關節上。
+        data.ctrl[actuator_id] = pd_torque
+        
         times.append(data.time)
-        positions.append(data.qpos[model.jnt_qposadr[joint_id]])
-        velocities.append(data.qvel[model.jnt_dofadr[joint_id]])
+        positions.append(current_pos)
+        velocities.append(current_vel)
         
         mujoco.mj_step(model, data)
+        
     return np.array(times), np.array(positions), np.array(velocities)
 
+# 分析和繪圖函數不變
 def analyze_response(times, positions, velocities, target):
+    # ... (代碼省略，與之前完全相同)
     metrics = {}
     if target == 0: return metrics
     try:
@@ -104,8 +121,8 @@ def analyze_response(times, positions, velocities, target):
     metrics['peak_velocity'] = np.max(np.abs(velocities))
     return metrics
 
-# [MODIFIED] 簡化繪圖函數，不再從模型中讀取易出錯的 API 屬性
 def plot_response(times, positions, velocities, metrics, joint_name, target):
+    # ... (代碼省略，與之前完全相同)
     fig, ax1 = plt.subplots(figsize=(12, 7))
     ax1.plot(times, positions, '.-', color='royalblue', label='Actual Position')
     ax1.set_xlabel('Time (s)', fontsize=12)
@@ -134,20 +151,28 @@ def plot_response(times, positions, velocities, metrics, joint_name, target):
     lines, labels = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax2.legend(lines + lines2, labels + labels2, loc='lower right')
-    title_str = (f'Manual Tuning Result - Joint: {joint_name}') # 簡化標題
+    title_str = (f'Manual PD Tuning - Joint: {joint_name} (Kp={CONFIG["KP"]}, D_ratio={CONFIG["DAMPING_RATIO"]})')
     plt.title(title_str, fontsize=16)
     fig.tight_layout()
     plt.show()
 
+
 def main():
-    print(f"🔧 開始手動調校測試...")
+    print(f"🔧 開始手動 PD 控制器調校測試...")
     print(f"   - 正在載入模型: {CONFIG['MODEL_PATH']}")
     print(f"   - 測試目標關節: {CONFIG['JOINT_TO_TEST']}")
 
     try:
         model = load_model_with_fixed_base(CONFIG["MODEL_PATH"])
         data = mujoco.MjData(model)
+        
+        # 打印出模型中的物理阻尼，以供參考
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, CONFIG["JOINT_TO_TEST"])
+        print("--- 從 XML 讀取的物理屬性 ---")
+        print(f"關節物理阻尼 (damping): {model.jnt_damping[joint_id]:.4f}")
+        print(f"關節電樞慣量 (armature): {model.dof_armature[model.jnt_dofadr[joint_id]]:.4f}")
         print(f"✅ 模型載入成功！")
+        
     except Exception as e:
         print(f"❌ 錯誤: 無法載入或處理模型檔案 '{CONFIG['MODEL_PATH']}'.")
         print(f"   詳細錯誤: {e}")
@@ -155,15 +180,19 @@ def main():
 
     joint_name = CONFIG["JOINT_TO_TEST"]
 
-    print("\n🚀 正在執行模擬...")
-    times, positions, velocities = run_step_response_simulation(
-        model, data, joint_name, CONFIG["STEP_TARGET_ANGLE"], CONFIG["SIMULATION_DURATION"]
+    print("\n🚀 正在執行模擬 (使用 Python 實現的 PD 控制)...")
+    times, positions, velocities = run_manual_pd_simulation(
+        model, data, joint_name, 
+        CONFIG["STEP_TARGET_ANGLE"], 
+        CONFIG["SIMULATION_DURATION"],
+        CONFIG["KP"],
+        CONFIG["DAMPING_RATIO"]
     )
     
     print("📊 正在分析結果...")
     metrics = analyze_response(times, positions, velocities, CONFIG["STEP_TARGET_ANGLE"])
     
-    print("\n--- 手動調校結果報告 ---")
+    print("\n--- 控制器性能報告 ---")
     print(f"上升時間 (10%-90%): {metrics.get('rise_time', 'N/A'):.4f} s  (目標: ~{TARGET_METRICS['rise_time']:.2f}s)")
     print(f"峰值時間:           {metrics.get('peak_time', 'N/A'):.4f} s  (目標: ~{TARGET_METRICS['peak_time']:.2f}s)")
     print(f"超調量:             {metrics.get('overshoot_pct', 'N/A'):.2f} %   (目標: ~{TARGET_METRICS['overshoot_pct']:.2f}%)")
@@ -172,7 +201,6 @@ def main():
     print("------------------------\n")
     
     print("📈 正在繪製最終響應圖...")
-    # [MODIFIED] 簡化函數呼叫
     plot_response(times, positions, velocities, metrics, joint_name, CONFIG["STEP_TARGET_ANGLE"])
     
     print("\n✅ 測試完成。請查看彈出的圖表。")

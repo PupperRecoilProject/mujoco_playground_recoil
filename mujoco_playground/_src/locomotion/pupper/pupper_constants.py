@@ -101,8 +101,8 @@ DEFAULT_HIP_ANGLE = 0.4
 DEFAULT_KNEE_ANGLE = -0.8
 
 # PD 控制器增益
-MOTOR_KP = 0.19
-MOTOR_KD = 0.01
+MOTOR_KP = 4
+MOTOR_KD = 0.4
 
 # 動作空間限制 (從 XML 的 joint range 獲取)
 ACTION_LIMITS = np.array([

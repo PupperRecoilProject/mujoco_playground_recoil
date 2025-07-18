@@ -36,8 +36,11 @@ def default_config() -> config_dict.ConfigDict:
       ctrl_dt=0.02,
       sim_dt=0.004,
       episode_length=1000,
-      Kp=consts.MOTOR_KP,
-      Kd=consts.MOTOR_KD,
+      #Kp=consts.MOTOR_KP,
+      #Kd=consts.MOTOR_KD,
+      # 添加新的配置項
+      stiffness = consts.STIFFNESS,
+      damping = consts.DAMPING,
       action_repeat=1,
       action_scale=0.5, #0.5
       history_len=1, # This seems to be unused in the original code
@@ -144,6 +147,12 @@ class Joystick(pupper_base.PupperEnv):
     self._cmd_a = jp.array(self._config.command_config.a)
     self._cmd_b = jp.array(self._config.command_config.b)
 
+    # === 新增代碼: 從配置中讀取並保存 PD 增益 ===
+    # self._config 是在父類 __init__ 中被賦值的，所以在這裡可以直接使用
+    self.kp = self._config.stiffness
+    self.kd = self._config.damping
+    # === 新增代碼結束 ===
+
   # `reset` and `step` methods are complex but highly general.
   # The core logic of updating state, commands, and perturbations
   # is independent of the robot's morphology, so we keep them.
@@ -214,10 +223,42 @@ class Joystick(pupper_base.PupperEnv):
     if self._config.pert_config.enable:
       state = self._maybe_apply_perturbation(state)
 
-    motor_targets = self._default_pose + action * self._config.action_scale
-    data = mjx_env.step(
-        self.mjx_model, state.data, motor_targets, self.n_substeps
-    )
+    #motor_targets = self._default_pose + action * self._config.action_scale
+    #data = mjx_env.step(
+    #    self.mjx_model, state.data, motor_targets, self.n_substeps
+    #)
+
+    # --- 核心修改: 替換舊的 mjx_env.step ---
+    
+    # 1. 得到 RL 策略輸出的目標角度 (邏輯不變)
+    target_q = self._default_pose + action * self._config.action_scale
+
+    # 2. 計算關節端的最大力矩
+    max_joint_torque = consts.MAX_MOTOR_TORQUE * consts.GEAR_RATIO
+
+    # 3. 在循環中執行 PD 控制和模擬步驟
+    def pd_control_step(i, data):
+        # 讀取當前關節狀態
+        current_q = data.qpos[7:]
+        current_v = data.qvel[6:]
+
+        # 使用 pupper_constants.py 中定義的新增益計算 PD 控制力矩
+        torque = self.kp * (target_q - current_q) - self.kd * current_v
+        
+        # 力矩飽和
+        torque = jp.clip(torque, -max_joint_torque, max_joint_torque)
+
+        # 將目標力矩轉換為致動器的控制信號 (模擬電流)
+        final_ctrl = torque / (consts.TORQUE_CONSTANT * consts.GEAR_RATIO)
+
+        # 應用控制信號並執行一步模擬
+        data = data.replace(ctrl=final_ctrl)
+        data = mjx.step(self.mjx_model, data)
+        return data
+
+    # 執行 n_substeps 次高頻控制
+    data = jax.lax.fori_loop(0, self.n_substeps, pd_control_step, state.data)
+    # --- 修改結束 ---
 
     # Contact detection and foot state tracking
     contact = jp.array([
@@ -348,34 +389,6 @@ class Joystick(pupper_base.PupperEnv):
   def _reward_tracking_lin_vel(self, commands: jax.Array, local_vel: jax.Array) -> jax.Array:
     lin_vel_error = jp.sum(jp.square(commands[:2] - local_vel[:2]))
     return jp.exp(-lin_vel_error / self._config.reward_config.tracking_sigma)
-  '''def _reward_tracking_lin_vel(self, commands: jax.Array, local_vel: jax.Array) -> jax.Array:
-    """
-    Calculates the reward for tracking linear velocity commands.
-    This version applies an extra penalty to lateral velocity errors
-    to encourage straight-line walking.
-    """
-    # 提取指令中的前進/後退(x)和橫向(y)速度
-    x_vel_cmd, y_vel_cmd = commands[0], commands[1]
-    
-    # 提取機器人實際的本地速度
-    x_vel_actual, y_vel_actual = local_vel[0], local_vel[1]
-    
-    # 分別計算前進方向和橫向的誤差的平方
-    forward_error_sq = jp.square(x_vel_actual - x_vel_cmd)
-    lateral_error_sq = jp.square(y_vel_actual - y_vel_cmd)
-    
-    # 【關鍵修改】: 為橫向誤差設置一個懲罰權重
-    # 這個值越大，AI 就越不願意產生橫向速度
-    # 5.0 是一個很好的起始點，意味著橫向誤差的「代價」是前進誤差的5倍
-    lateral_penalty_weight = 10.0
-    
-    # 計算加權後的總誤差
-    # 注意：我們只在有移動指令時才應該特別關注橫向誤差，但在指令為零時，任何速度都應被懲罰
-    # 所以這個加權是普適的。
-    total_error = forward_error_sq + lateral_penalty_weight * lateral_error_sq
-    
-    # 使用與之前相同的高斯函數來計算最終獎勵
-    return jp.exp(-total_error / self._config.reward_config.tracking_sigma)'''
 
   def _reward_tracking_ang_vel(self, commands: jax.Array, ang_vel: jax.Array) -> jax.Array:
     ang_vel_error = jp.square(commands[2] - ang_vel[2])

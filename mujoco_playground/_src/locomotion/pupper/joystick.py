@@ -58,8 +58,8 @@ def default_config() -> config_dict.ConfigDict:
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
-              tracking_lin_vel=3.0, # 1.0
-              tracking_ang_vel=1.5, # 0.5
+              tracking_lin_vel=1.0, # 1.0
+              tracking_ang_vel=0.5, # 0.5
               lin_vel_z=-0.5,
               ang_vel_xy=-0.05,
               orientation=-5.0,
@@ -73,7 +73,7 @@ def default_config() -> config_dict.ConfigDict:
               feet_clearance=-2.0,
               feet_height=-0.2,
               feet_slip=-0.1,
-              feet_air_time=0.1,
+              feet_air_time=0,  #0.1
           ),
           tracking_sigma=0.25,
           # Step 2: Adjust max_foot_height for the shorter Pupper
@@ -466,8 +466,8 @@ class Joystick(pupper_base.PupperEnv):
 
   def _reward_feet_air_time(self, air_time: jax.Array, first_contact: jax.Array, commands: jax.Array) -> jax.Array:
     cmd_norm = jp.linalg.norm(commands)
-    # Reward air time around a target duration (e.g., 0.1s)
-    rew_air_time = jp.sum(jp.exp(-100 * jp.square(air_time - 0.1)) * first_contact)
+    # Reward air time around a target duration (e.g., 0.6s)
+    rew_air_time = jp.sum(jp.exp(-100 * jp.square(air_time - 0.6)) * first_contact)
     rew_air_time *= (cmd_norm > 0.1)
     return rew_air_time
 

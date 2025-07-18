@@ -229,7 +229,7 @@ class Joystick(pupper_base.PupperEnv):
 
     # 2. 計算關節端的最大力矩
     # 計算對應的最大電流 (A)，用於飽和
-    max_motor_current_A = consts.MAX_MOTOR_TORQUE / consts.TORQUE_CONSTANT # 約 1.0 / 0.333 = 3A
+    max_motor_current_mA = consts.MAX_MOTOR_TORQUE * consts.TORQUE_CONSTANT # 約 1.0 * 3000 = 3000 mA
 
     # 3. 在循環中執行級聯控制和模擬步驟
     def cascade_control_step(i, data):
@@ -244,9 +244,7 @@ class Joystick(pupper_base.PupperEnv):
         # 計算目標速度
         target_v = self.pos_kp * pos_error
         # 限制目標速度
-        target_v = jp.clip(target_v, 
-                           -self.max_target_vel, 
-                           self.max_target_vel)
+        target_v = jp.clip(target_v, -self.max_target_vel, self.max_target_vel)
 
         # --- 內環: 速度控制器 (P-Controller) ---
         vel_error = target_v - current_v
@@ -255,13 +253,13 @@ class Joystick(pupper_base.PupperEnv):
 
         # --- 電流飽和 ---
         # 限制電流在物理範圍內
-        target_current = jp.clip(target_current, -max_motor_current_A, max_motor_current_A)
+        target_current = jp.clip(target_current, -max_motor_current_mA, max_motor_current_mA)
         
         # === 邏輯結束 ===
 
         # 將目標電流直接作為控制信號發送給 <general> 致動器
         # 因為我們的 XML 中 gain 是 Kt，ctrlrange 是電流範圍，所以這裡可以直接用
-        final_ctrl = target_current
+        final_ctrl = target_current / 1000  # 將 mA 轉換為 A
         
         # 應用控制信號並執行一步模擬
         data = data.replace(ctrl=final_ctrl)
@@ -270,7 +268,7 @@ class Joystick(pupper_base.PupperEnv):
 
     # 執行 n_substeps 次高頻控制
     data = jax.lax.fori_loop(0, self.n_substeps, cascade_control_step, state.data)
-    # --- 修改結束 ---
+
 
     # Contact detection and foot state tracking
     contact = jp.array([

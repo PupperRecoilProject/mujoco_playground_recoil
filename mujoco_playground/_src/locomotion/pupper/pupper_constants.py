@@ -107,7 +107,7 @@ CASCADE_VEL_KP = 500.0   # 內環速度 P 增益 (500.0)
 CASCADE_MAX_TARGET_VELOCITY_RAD_S = 8.0 # (8.0)
 
 # 馬達物理參數 (從你的 XML 和規格書中獲取)
-TORQUE_CONSTANT = 0.333  # 力矩常數 (Kt)，來自 XML 的 gainprm
+TORQUE_CONSTANT = 3000  # 3000 mA / N·m
 MAX_MOTOR_TORQUE = 1.6   # 馬達本身的最大持續扭矩 (N·m)
 # --- 修改結束 ---
 

@@ -36,11 +36,12 @@ def default_config() -> config_dict.ConfigDict:
       ctrl_dt=0.02,
       sim_dt=0.004,
       episode_length=1000,
-      #Kp=consts.MOTOR_KP,
-      #Kd=consts.MOTOR_KD,
-      # 添加新的配置項
-      stiffness = consts.STIFFNESS,
-      damping = consts.DAMPING,
+
+      # cascade control
+      cascade_pos_kp = consts.CASCADE_POS_KP,
+      cascade_vel_kp = consts.CASCADE_VEL_KP,
+      cascade_max_target_velocity_rad_s = consts.CASCADE_MAX_TARGET_VELOCITY_RAD_S,
+
       action_repeat=1,
       action_scale=0.5, #0.5
       history_len=1, # This seems to be unused in the original code
@@ -147,11 +148,11 @@ class Joystick(pupper_base.PupperEnv):
     self._cmd_a = jp.array(self._config.command_config.a)
     self._cmd_b = jp.array(self._config.command_config.b)
 
-    # === 新增代碼: 從配置中讀取並保存 PD 增益 ===
-    # self._config 是在父類 __init__ 中被賦值的，所以在這裡可以直接使用
-    self.kp = self._config.stiffness
-    self.kd = self._config.damping
-    # === 新增代碼結束 ===
+    # === 新增代碼: 從配置中讀取並保存級聯控制器增益 ===
+    self.pos_kp = self._config.cascade_pos_kp
+    self.vel_kp = self._config.cascade_vel_kp
+    self.max_target_vel = self._config.cascade_max_target_velocity_rad_s
+    # === 修改結束 ===
 
   # `reset` and `step` methods are complex but highly general.
   # The core logic of updating state, commands, and perturbations
@@ -222,42 +223,53 @@ class Joystick(pupper_base.PupperEnv):
   def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
     if self._config.pert_config.enable:
       state = self._maybe_apply_perturbation(state)
-
-    #motor_targets = self._default_pose + action * self._config.action_scale
-    #data = mjx_env.step(
-    #    self.mjx_model, state.data, motor_targets, self.n_substeps
-    #)
-
-    # --- 核心修改: 替換舊的 mjx_env.step ---
     
     # 1. 得到 RL 策略輸出的目標角度 (邏輯不變)
     target_q = self._default_pose + action * self._config.action_scale
 
     # 2. 計算關節端的最大力矩
-    max_joint_torque = consts.MAX_MOTOR_TORQUE * consts.GEAR_RATIO
+    # 計算對應的最大電流 (A)，用於飽和
+    max_motor_current_A = consts.MAX_MOTOR_TORQUE / consts.TORQUE_CONSTANT # 約 1.0 / 0.333 = 3A
 
-    # 3. 在循環中執行 PD 控制和模擬步驟
-    def pd_control_step(i, data):
+    # 3. 在循環中執行級聯控制和模擬步驟
+    def cascade_control_step(i, data):
         # 讀取當前關節狀態
         current_q = data.qpos[7:]
         current_v = data.qvel[6:]
 
-        # 使用 pupper_constants.py 中定義的新增益計算 PD 控制力矩
-        torque = self.kp * (target_q - current_q) - self.kd * current_v
+        # === 級聯控制邏輯 (與您的 Teensy 完全一樣) ===
         
-        # 力矩飽和
-        torque = jp.clip(torque, -max_joint_torque, max_joint_torque)
+        # --- 外環: 位置控制器 (P-Controller) ---
+        pos_error = target_q - current_q
+        # 計算目標速度
+        target_v = self.pos_kp * pos_error
+        # 限制目標速度
+        target_v = jp.clip(target_v, 
+                           -self.max_target_vel, 
+                           self.max_target_vel)
 
-        # 將目標力矩轉換為致動器的控制信號 (模擬電流)
-        final_ctrl = torque / (consts.TORQUE_CONSTANT * consts.GEAR_RATIO)
+        # --- 內環: 速度控制器 (P-Controller) ---
+        vel_error = target_v - current_v
+        # 計算目標電流 (單位: A)
+        target_current = self.vel_kp * vel_error
 
+        # --- 電流飽和 ---
+        # 限制電流在物理範圍內
+        target_current = jp.clip(target_current, -max_motor_current_A, max_motor_current_A)
+        
+        # === 邏輯結束 ===
+
+        # 將目標電流直接作為控制信號發送給 <general> 致動器
+        # 因為我們的 XML 中 gain 是 Kt，ctrlrange 是電流範圍，所以這裡可以直接用
+        final_ctrl = target_current
+        
         # 應用控制信號並執行一步模擬
         data = data.replace(ctrl=final_ctrl)
         data = mjx.step(self.mjx_model, data)
         return data
 
     # 執行 n_substeps 次高頻控制
-    data = jax.lax.fori_loop(0, self.n_substeps, pd_control_step, state.data)
+    data = jax.lax.fori_loop(0, self.n_substeps, cascade_control_step, state.data)
     # --- 修改結束 ---
 
     # Contact detection and foot state tracking

@@ -100,21 +100,15 @@ DEFAULT_ABDUCTION_ANGLE = 0.0
 DEFAULT_HIP_ANGLE = 0.4
 DEFAULT_KNEE_ANGLE = -0.8
 
-# PD 控制器增益
-#MOTOR_KP = 4
-#MOTOR_KD = 0.4
-
-# 新的 PD 控制器增益 (用於我們在 Python 中實現的 PD 控制器)
-# 這些值的物理單位是真實的，需要手動調校
-# KP 的單位約為 N·m/rad
-# KD 的單位約為 N·m/(rad/s)
-STIFFNESS = 100.0  # 剛度 (kp)
-DAMPING = 2.0    # 阻尼 (kd)
+# 新的級聯控制器增益 (與您的 Teensy 代碼匹配)
+CASCADE_POS_KP = 16.0  # 外環位置 P 增益 (16.0)
+CASCADE_VEL_KP = 500.0   # 內環速度 P 增益 (500.0)
+# 外環輸出的最大目標速度 (rad/s)
+CASCADE_MAX_TARGET_VELOCITY_RAD_S = 8.0 # (8.0)
 
 # 馬達物理參數 (從你的 XML 和規格書中獲取)
 TORQUE_CONSTANT = 0.333  # 力矩常數 (Kt)，來自 XML 的 gainprm
-GEAR_RATIO = 36.0        # 減速比，來自 XML 的 gear
-MAX_MOTOR_TORQUE = 1.0   # 馬達本身的最大持續扭矩 (N·m)
+MAX_MOTOR_TORQUE = 1.6   # 馬達本身的最大持續扭矩 (N·m)
 # --- 修改結束 ---
 
 # 動作空間限制 (從 XML 的 joint range 獲取)

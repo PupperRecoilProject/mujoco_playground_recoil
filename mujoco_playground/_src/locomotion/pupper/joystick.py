@@ -67,7 +67,7 @@ def default_config() -> config_dict.ConfigDict:
               pose=0.1,             # 0.5
               termination=-1.0,
               stand_still=-1.0,
-              torques=-0.0002,
+              torques=-0.02, #-0.0002
               action_rate=-0.01,
               energy=-0.001,
               feet_clearance=-2.0,

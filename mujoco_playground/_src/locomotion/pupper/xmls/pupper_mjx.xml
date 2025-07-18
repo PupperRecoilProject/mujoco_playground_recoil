@@ -15,13 +15,12 @@
   <default>
     <default class="pupper">
       <!-- 1. Global physical properties for ALL joints -->
-      <joint armature="0.01" damping="0.4" frictionloss="0.28"/>
+      <joint armature="0.005" damping="0.1" frictionloss="0.2"/>
       
       <!-- 2. Global controller template for ALL position actuators -->
       <!--    kp and kv are placeholders to be modified by the Python script -->
-      <position forcerange="-1.7 1.7" inheritrange="1" kp="4"/>
-      
-      <general biastype="none" />
+      <general gainprm="0.333" ctrlrange="-10.0 10.0" gear="36" biastype="none"/>
+
 
       <!-- Joint-specific kinematics -->
       <default class="abduction">
@@ -135,18 +134,18 @@
   </worldbody>
 
   <actuator>
-      <position name="FR_hip"   joint="FR_hip_joint"/>
-      <position name="FR_thigh" joint="FR_thigh_joint"/>
-      <position name="FR_calf"  joint="FR_calf_joint"/>
-      <position name="FL_hip"   joint="FL_hip_joint"/>
-      <position name="FL_thigh" joint="FL_thigh_joint"/>
-      <position name="FL_calf"  joint="FL_calf_joint"/>
-      <position name="RR_hip"   joint="RR_hip_joint"/>
-      <position name="RR_thigh" joint="RR_thigh_joint"/>
-      <position name="RR_calf"  joint="RR_calf_joint"/>
-      <position name="RL_hip"   joint="RL_hip_joint"/>
-      <position name="RL_thigh" joint="RL_thigh_joint"/>
-      <position name="RL_calf"  joint="RL_calf_joint"/>
+      <general name="FR_hip"   joint="FR_hip_joint"/>
+      <general name="FR_thigh" joint="FR_thigh_joint"/>
+      <general name="FR_calf"  joint="FR_calf_joint"/>
+      <general name="FL_hip"   joint="FL_hip_joint"/>
+      <general name="FL_thigh" joint="FL_thigh_joint"/>
+      <general name="FL_calf"  joint="FL_calf_joint"/>
+      <general name="RR_hip"   joint="RR_hip_joint"/>
+      <general name="RR_thigh" joint="RR_thigh_joint"/>
+      <general name="RR_calf"  joint="RR_calf_joint"/>
+      <general name="RL_hip"   joint="RL_hip_joint"/>
+      <general name="RL_thigh" joint="RL_thigh_joint"/>
+      <general name="RL_calf"  joint="RL_calf_joint"/>
   </actuator>
 
   <!-- Sensors remain the same -->

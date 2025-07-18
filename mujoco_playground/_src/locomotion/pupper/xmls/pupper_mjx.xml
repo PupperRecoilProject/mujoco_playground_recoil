@@ -19,7 +19,7 @@
       
       <!-- 2. Global controller template for ALL position actuators -->
       <!--    kp and kv are placeholders to be modified by the Python script -->
-      <general gainprm="0.333" ctrlrange="-10.0 10.0" gear="36" biastype="none"/>
+      <general gainprm="0.333" ctrlrange="-5.0 5.0" gear="1" biastype="none"/>
 
 
       <!-- Joint-specific kinematics -->

@@ -35,8 +35,14 @@ def default_config() -> config_dict.ConfigDict:
       ctrl_dt=0.02,
       sim_dt=0.004,
       episode_length=1000,
-      Kp=35.0,
-      Kd=0.5,
+
+      #Kp=35.0,
+      #Kd=0.5,
+      # cascade control
+      cascade_pos_kp = consts.CASCADE_POS_KP,
+      cascade_vel_kp = consts.CASCADE_VEL_KP,
+      cascade_max_target_velocity_rad_s = consts.CASCADE_MAX_TARGET_VELOCITY_RAD_S,
+
       action_repeat=1,
       action_scale=0.5,
       history_len=1,
@@ -153,6 +159,12 @@ class JoystickWithGun(pupper_base.PupperEnv):
 
     self._cmd_a = jp.array(self._config.command_config.a)
     self._cmd_b = jp.array(self._config.command_config.b)
+
+    # === 新增代碼: 從配置中讀取並保存級聯控制器增益 ===
+    self.pos_kp = self._config.cascade_pos_kp
+    self.vel_kp = self._config.cascade_vel_kp
+    self.max_target_vel = self._config.cascade_max_target_velocity_rad_s
+    # === 修改結束 ===
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     qpos = self._init_q

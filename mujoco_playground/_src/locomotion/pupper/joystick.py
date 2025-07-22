@@ -39,7 +39,7 @@ def default_config() -> config_dict.ConfigDict:
 
       # cascade control
       cascade_pos_kp = consts.CASCADE_POS_KP,
-      cascade_vel_kp = consts.CASCADE_VEL_KP,
+      cascade_vel_kp = consts.CASCADE_VEL_KP_mA,
       cascade_max_target_velocity_rad_s = consts.CASCADE_MAX_TARGET_VELOCITY_RAD_S,
 
       action_repeat=1,
@@ -67,11 +67,11 @@ def default_config() -> config_dict.ConfigDict:
               pose=0.1,             # 0.5
               termination=-1.0,
               stand_still=-1.0,
-              torques=-0.02, #-0.0002
+              torques=-0.0002, #-0.0002
               action_rate=-0.01,
               energy=-0.001,
               feet_clearance=-2.0,
-              feet_height=-0.2,
+              feet_height=-0.02,
               feet_slip=-0.1,
               feet_air_time=0,  #0.1
           ),
@@ -86,7 +86,7 @@ def default_config() -> config_dict.ConfigDict:
           kick_wait_times=[1.0, 3.0],
       ),
       command_config=config_dict.create(
-          a=[0.4, 0.7, 0.4], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
+          a=[0.3, 0.5, 0.3], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
           b=[0.25, 0.9, 0.5],# b=[0.9, 0.25, 0.5]
       ),
   )
@@ -229,38 +229,40 @@ class Joystick(pupper_base.PupperEnv):
 
     # 2. 計算關節端的最大力矩
     # 計算對應的最大電流 (A)，用於飽和
-    max_motor_current_mA = consts.MAX_MOTOR_TORQUE * consts.TORQUE_CONSTANT # 約 1.0 * 3000 = 3000 mA
+    MAX_MOTOR_CURRENT_mA = consts.MAX_MOTOR_TORQUE * consts.TORQUE_CONSTANT # 約 1.0 * 3000 = 3000 mA
 
     # 3. 在循環中執行級聯控制和模擬步驟
     def cascade_control_step(i, data):
-        # 讀取當前關節狀態
+        # =================================================================
+        # 【確認】這兩行是絕對必要的，且必須在此位置
+        # =================================================================
+        # 讀取當前所有關節的角度 (qpos)
         current_q = data.qpos[7:]
+        # 讀取當前所有關節的角速度 (qvel)
         current_v = data.qvel[6:]
-
-        # === 級聯控制邏輯 (與您的 Teensy 完全一樣) ===
-        
-        # --- 外環: 位置控制器 (P-Controller) ---
+        # =================================================================
         pos_error = target_q - current_q
-        # 計算目標速度
         target_v = self.pos_kp * pos_error
-        # 限制目標速度
         target_v = jp.clip(target_v, -self.max_target_vel, self.max_target_vel)
 
         # --- 內環: 速度控制器 (P-Controller) ---
         vel_error = target_v - current_v
-        # 計算目標電流 (單位: A)
-        target_current = self.vel_kp * vel_error
+        # 計算目標電流，因為 self.vel_kp (來自 CASCADE_VEL_KP_mA) 很大，
+        # 所以 target_current 的單位直接就是毫安 (mA)
+        target_current_mA = self.vel_kp * vel_error
 
-        # --- 電流飽和 ---
-        # 限制電流在物理範圍內
-        target_current = jp.clip(target_current, -max_motor_current_mA, max_motor_current_mA)
+        # --- 電流飽和 (以 mA 為單位) ---
+        # 直接使用我們在 constants 中定義的毫安極限值
+        final_ctrl = jp.clip(target_current_mA, 
+                             -MAX_MOTOR_CURRENT_mA, 
+                             MAX_MOTOR_CURRENT_mA)
         
-        # === 邏輯結束 ===
-
-        # 將目標電流直接作為控制信號發送給 <general> 致動器
-        # 因為我們的 XML 中 gain 是 Kt，ctrlrange 是電流範圍，所以這裡可以直接用
-        final_ctrl = target_current / 1000  # 將 mA 轉換為 A
-        
+        # === 邏輯結束，現在單位完全匹配 ===
+        # final_ctrl 的單位是 mA。
+        # XML 的 ctrlrange 也是 mA。
+        # XML 的 gainprm 也是 N·m/mA。
+        # 所以可以直接傳遞，不再需要任何單位轉換。
+        final_ctrl = final_ctrl/1000
         # 應用控制信號並執行一步模擬
         data = data.replace(ctrl=final_ctrl)
         data = mjx.step(self.mjx_model, data)

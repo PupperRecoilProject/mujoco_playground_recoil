@@ -15,7 +15,7 @@
   <default>
     <default class="pupper">
       <!-- 1. Global physical properties for ALL joints -->
-      <joint armature="0.005" damping="0.1" frictionloss="0.2"/>
+      <joint armature="0.0071" damping="0.087" frictionloss="0.2"/>
       
       <!-- 2. Global controller template for ALL position actuators -->
       <!--    kp and kv are placeholders to be modified by the Python script -->

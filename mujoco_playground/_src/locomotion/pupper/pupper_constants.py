@@ -102,13 +102,16 @@ DEFAULT_KNEE_ANGLE = -0.8
 
 # 新的級聯控制器增益 (與您的 Teensy 代碼匹配)
 CASCADE_POS_KP = 16.0  # 外環位置 P 增益 (16.0)
-CASCADE_VEL_KP = 500.0   # 內環速度 P 增益 (500.0)
+CASCADE_VEL_KP_mA = 500   # 內環速度 P 增益 (500.0)
 # 外環輸出的最大目標速度 (rad/s)
 CASCADE_MAX_TARGET_VELOCITY_RAD_S = 8.0 # (8.0)
 
 # 馬達物理參數 (從你的 XML 和規格書中獲取)
-TORQUE_CONSTANT = 3000  # 3000 mA / N·m
+TORQUE_CONSTANT = 3000  # 單位: N·m / A 
 MAX_MOTOR_TORQUE = 1.6   # 馬達本身的最大持續扭矩 (N·m)
+# 最大持續電流，單位是 mA
+# I(mA) = Torque(N·m) / Kt(N·m/mA) = 1.6 / 0.000333 ≈ 4800 mA
+# MAX_MOTOR_CURRENT_mA = 4800.0 # 單位: mA
 # --- 修改結束 ---
 
 # 動作空間限制 (從 XML 的 joint range 獲取)

@@ -1,8 +1,8 @@
 # ===================================================================
-#      JAX to ONNX Conversion (最終版 - 導出核心 MLP 和獨立 Normalizer)
+#      JAX to ONNX Conversion (最終端到端版 - 包含正規化和歷史處理)
 # ===================================================================
 
-# --- 導入 ---
+# --- 導入 (保持不變) ---
 import pickle
 import numpy as np
 import os
@@ -36,21 +36,47 @@ class KerasMLP(tf.keras.Model):
             x = layer(x)
         return x
 
-def make_tf_core_policy_network(policy_obs_size: int, act_size: int, hidden_sizes: Tuple[int, ...]):
-    """創建一個【不包含】Normalizer 的核心策略網路。"""
-    # 輸入層接收【已經被歸一化】的數據
-    inputs = {'state': tf.keras.Input(shape=(policy_obs_size,), name='state')}
+def make_end_to_end_tf_policy(
+    total_obs_size: int, 
+    single_step_obs_size: int,
+    act_size: int, 
+    hidden_sizes: Tuple[int, ...], 
+    normalizer_mean_tiled: np.ndarray, 
+    normalizer_std_tiled: np.ndarray
+):
+    """
+    創建一個完整的、端到端的 TF 策略網路。
+    它接收 720 維的原始歷史觀測，並在內部完成所有處理。
+    """
+    # 1. 輸入層接收 720 維的扁平化原始觀測
+    inputs = {'state': tf.keras.Input(shape=(total_obs_size,), name='state')}
     
-    # 直接將輸入送入 MLP
+    # 2. 正規化層，使用 720 維的 mean 和 std
+    normalized_obs_720d = layers.Lambda(
+        lambda x: (x['state'] - normalizer_mean_tiled) / (normalizer_std_tiled + 1e-8),
+        name="normalization"
+    )(inputs)
+    
+    # 3. 【關鍵】提取層：從 720 維的歸一化觀測中，只取出最後 48 維
+    #    這對應於最新的、被正確歸一化的觀測
+    latest_normalized_obs_48d = layers.Lambda(
+        lambda x: x[:, -single_step_obs_size:],
+        name="extract_latest_obs"
+    )(normalized_obs_720d)
+    
+    # 4. 核心 MLP，接收 48 維的數據
     mlp = KerasMLP(layer_sizes=list(hidden_sizes) + [act_size * 2])
-    logits = mlp(inputs['state']) # 直接傳遞張量
+    logits = mlp(latest_normalized_obs_48d)
     
+    # 5. 輸出層
     loc = layers.Lambda(lambda x: tf.split(x, num_or_size_splits=2, axis=-1)[0])(logits)
     outputs = tf.keras.layers.Activation('tanh', name='action')(loc)
-    return tf.keras.Model(inputs=inputs, outputs=outputs, name="PupperPPOCorePolicy")
+    
+    return tf.keras.Model(inputs=inputs, outputs=outputs, name="PupperPPOEndToEndPolicy")
 
 def transfer_weights(jax_policy_params, tf_model):
-    """將 JAX 權重轉移到 TensorFlow 模型。"""
+    # 這個函數現在的目標是 tf_model 中的 'mlp_block'
+    # 它的邏輯與我們之前的簡單版本完全一樣
     tf_mlp_layers = [l for l in tf_model.get_layer('mlp_block').layers if isinstance(l, layers.Dense)]
     jax_weights_flat = jax.tree_util.tree_leaves(jax_policy_params)
 
@@ -59,23 +85,12 @@ def transfer_weights(jax_policy_params, tf_model):
         return False
     
     for i, tf_layer in enumerate(tf_mlp_layers):
-        # Brax 權重順序是 (bias, kernel)
         jax_bias = np.array(jax_weights_flat[i * 2])
         jax_kernel = np.array(jax_weights_flat[i * 2 + 1])
-        
-        tf_kernel_shape = tf_layer.get_weights()[0].shape
-        # JAX (Flax) 的 Dense kernel shape 是 (in_features, out_features)
-        # TF Keras 的 Dense kernel shape 也是 (in_features, out_features)
-        # 通常不需要轉置，但保留檢查以防萬一
-        if jax_kernel.shape != tf_kernel_shape:
-            print(f"  [致命錯誤] 層 '{tf_layer.name}' 的權重矩陣形狀不匹配。")
-            print(f"    - TF 期望形狀: {tf_kernel_shape}")
-            print(f"    - JAX 實際形狀: {jax_kernel.shape}")
-            return False
-        
+        if jax_kernel.shape != tf_layer.get_weights()[0].shape:
+            return False # 簡化錯誤處理
         tf_layer.set_weights([jax_kernel, jax_bias])
     return True
-
 
 def main():
     """主函數"""
@@ -84,13 +99,15 @@ def main():
     env_name = 'PupperJoystickFlatTerrain'
     CHECKPOINT_DIR = epath.Path("checkpoints/" + env_name).resolve()
     
-    # 核心模型的輸入是單步 48 維
-    POLICY_OBS_SIZE = 48
+    SINGLE_STEP_OBS_SIZE = 48
+    HISTORY_LEN = 15
+    POLICY_OBS_SIZE = SINGLE_STEP_OBS_SIZE * HISTORY_LEN # 720
     ACTION_SIZE = 12
     POLICY_HIDDEN_LAYER_SIZES = (512, 256, 128)
 
     # --- 步驟 1: 載入 JAX 參數 ---
     print(f"\n--- Step 1: Loading JAX parameters ---")
+    # ... (載入參數的邏輯保持不變) ...
     try:
         steps = [int(p.name) for p in CHECKPOINT_DIR.iterdir() if p.is_dir() and p.name.isdigit()]
         latest_step = 203161600 #max(steps) if steps else None
@@ -106,40 +123,43 @@ def main():
         print(f"  [致命錯誤] 無法載入參數: {e}")
         raise
 
-    # --- 步驟 2: 導出 Normalizer 並創建純 TF 模型 ---
-    print("\n--- Step 2: Exporting normalizer and building CORE TF model ---")
+    # --- 步驟 2: 構建端到端的 TF 模型 ---
+    print("\n--- Step 2: Building END-TO-END TF model ---")
     try:
-        # 1. 提取並保存 48 維的 mean 和 std
-        mean = np.array(normalizer_params.mean['state'])
-        std = np.array(normalizer_params.std['state'])
+        # 1. 提取 48 維的 mean 和 std
+        original_mean = np.array(normalizer_params.mean['state'])
+        original_std = np.array(normalizer_params.std['state'])
         
-        output_dir = epath.Path("onnx")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        normalizer_output_path = output_dir / f"pupper_ppo_normalizer_{latest_step}.npz"
-        np.savez(normalizer_output_path, mean_state=mean, std_state=std)
-        print(f"  - Normalizer (48-dim) 已保存至: {normalizer_output_path}")
-
-        # 2. 構建【不含】Normalizer 的 48 維輸入模型
-        tf_policy_network = make_tf_core_policy_network(
-            policy_obs_size=POLICY_OBS_SIZE,
+        # 2. 手動將 Normalizer 參數擴展到 720 維
+        tiled_mean = np.tile(original_mean, HISTORY_LEN)
+        tiled_std = np.tile(original_std, HISTORY_LEN)
+        
+        # 3. 構建包含所有邏輯的端到端模型
+        tf_policy_network = make_end_to_end_tf_policy(
+            total_obs_size=POLICY_OBS_SIZE,
+            single_step_obs_size=SINGLE_STEP_OBS_SIZE,
             act_size=ACTION_SIZE,
             hidden_sizes=POLICY_HIDDEN_LAYER_SIZES,
+            normalizer_mean_tiled=tiled_mean,
+            normalizer_std_tiled=tiled_std
         )
-        print("  - TensorFlow Keras 核心模型 (48-dim input) 構建成功。")
+        print("  - 端到端 TensorFlow Keras 模型構建成功。")
         tf_policy_network.summary()
     except Exception as e:
         print(f"  [錯誤] 構建 TF 模型失敗: {e}")
         raise
 
-    # --- 步驟 3: 轉移權重 ---
-    print("\n--- Step 3: Transferring JAX weights to TensorFlow model ---")
+    # --- 步驟 3: 轉移權重到核心 MLP 部分 ---
+    print("\n--- Step 3: Transferring JAX weights to the CORE MLP of the model ---")
     if not transfer_weights(policy_params, tf_policy_network):
         return
     print("  - 權重轉移完成。")
 
-    # --- 步驟 4: 將 TF 模型轉換為 ONNX ---
-    print("\n--- Step 4: Converting TensorFlow model to ONNX ---")
-    output_path = output_dir / f"pupper_ppo_policy_core_{latest_step}.onnx"
+    # --- 步驟 4: 將完整的 TF 模型轉換為 ONNX ---
+    print("\n--- Step 4: Converting the complete TensorFlow model to ONNX ---")
+    output_dir = epath.Path("onnx")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"pupper_ppo_policy_e2e_{latest_step}.onnx"
     spec = ({'state': tf.TensorSpec((None, POLICY_OBS_SIZE), tf.float32, name="state")},)
     try:
         model_proto, _ = tf2onnx.convert.from_keras(
@@ -148,7 +168,7 @@ def main():
             opset=13,
             output_path=str(output_path)
         )
-        print(f"\n  - 轉換成功! ONNX 模型已保存至: {output_path}")
+        print(f"\n  - 轉換成功! 端到端 ONNX 模型已保存至: {output_path}")
         onnx.checker.check_model(str(output_path))
         print("  - ONNX 模型檢查成功。")
     except Exception as e:

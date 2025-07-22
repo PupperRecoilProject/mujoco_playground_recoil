@@ -1,5 +1,5 @@
 # ===================================================================
-#             ONNX 模型純驗證腳本 (最終完整版)
+#             ONNX 模型純驗證腳本 (最終核心驗證版)
 # ===================================================================
 import pickle
 import jax
@@ -7,189 +7,141 @@ import jax.numpy as jp
 import numpy as np
 import onnx
 import onnxruntime as ort
-import functools
 from etils import epath
 import sys
 import traceback
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Sequence
 
-# 將專案根目錄添加到 Python 路徑，以確保導入成功
-# 這是一個健壯的做法，避免因運行位置不同而導致的 ImportError
+# --- 【新增導入】---
+from flax import linen as nn
+
+# --- 將專案根目錄添加到 Python 路徑 ---
 try:
-    # 假設 test_onnx.py 位於 .../locomotion/pupper/
-    # 我們需要添加 `mujoco_playground_recoil` 這個根目錄
     project_root = epath.Path(__file__).parent.parent.parent.parent.parent
     if str(project_root) not in sys.path:
         sys.path.append(str(project_root))
 except NameError:
-    # 如果在 Notebook 中以單元格形式運行，__file__ 未定義，
-    # 這種情況下，請確保您的 Notebook 環境已經能正確導入 mujoco_playground
-    print("Warning: __file__ not defined. Assuming project is in PYTHONPATH.")
+    print("警告: __file__ 未定義。假設專案已在 PYTHONPATH 中。")
     pass
 
-# --- 步驟 1: 導入所有必要的模組 ---
-print("--- Step 1: Importing modules ---")
-try:
-    from brax.training.agents.ppo import networks as ppo_networks
-    from mujoco_playground.config import locomotion_params
-    from brax.training.acme import running_statistics
-    from mujoco_playground import registry
-except ImportError as e:
-    print(f"FATAL ERROR: Error importing necessary modules: {e}")
-    print("Please ensure 'brax' and 'mujoco_playground' are correctly installed "
-          "and their parent directory is in your PYTHONPATH.")
-    exit()
+# --- 【核心】手動定義一個與 Brax MLP 兼容的 Flax 模型 ---
+class SimpleMLP(nn.Module):
+    layer_sizes: Sequence[int]
+    activation: nn.activation = nn.swish
+
+    @nn.compact
+    def __call__(self, x):
+        for i, size in enumerate(self.layer_sizes):
+            act = self.activation if i < len(self.layer_sizes) - 1 else None
+            x = nn.Dense(
+                features=size,
+                kernel_init=jax.nn.initializers.lecun_uniform(),
+                name=f'hidden_{i}'
+            )(x)
+            if act:
+                x = act(x)
+        return x
 
 def main():
-    """Main function to run the validation."""
+    """主驗證函數"""
 
-   # ===================================================================
-    #      步驟 2: 配置 - 指定檔案路徑 (最終穩健版)
-    # ===================================================================
-    print("\n--- Step 2: Configuration ---")
+    # --- 步驟 1: 配置 ---
+    print("\n--- Step 1: Configuration ---")
     env_name = 'PupperJoystickFlatTerrain'
-    step = '30965760' 
-    
-    # 【關鍵修改】: 使用 __file__ 來獲取腳本所在的目錄
-    # 這使得路徑解析與您在哪裡運行命令無關，更加穩健
+    # 自動查找最新的 checkpoint
     script_dir = epath.Path(__file__).parent
+    checkpoint_dir = script_dir / f"checkpoints/{env_name}"
+    steps = [int(p.name) for p in checkpoint_dir.iterdir() if p.is_dir() and p.name.isdigit()]
+    latest_step = 203161600 # max(steps) if steps else None
+    if not latest_step:
+        print(f"致命錯誤: 在 {checkpoint_dir} 中找不到任何 checkpoint。")
+        return
+    step = str(latest_step)
     
-    # --- 指向 JAX 的 .pkl 參數檔案 ---
-    # 從腳本所在目錄開始構建路徑
-    pkl_path = script_dir / f"checkpoints/{env_name}/{step}/params.pkl"
+    pkl_path = checkpoint_dir / step / "params.pkl"
+    onnx_model_path = script_dir / f"onnx/pupper_ppo_policy_core_{step}.onnx"
+    normalizer_path = script_dir / f"onnx/pupper_ppo_normalizer_{step}.npz"
     
-    # --- 指向 ONNX 模型檔案 ---
-    # 從腳本所在目錄開始構建路徑
-    onnx_model_path = script_dir / f"pupper_ppo_policy_{step}_tf_converted.onnx"
+    POLICY_OBS_SIZE = 48
+    ACTION_SIZE = 12
+    POLICY_HIDDEN_LAYER_SIZES = (512, 256, 128)
+    
+    print(f"JAX 參數路徑: {pkl_path}")
+    print(f"ONNX 模型路徑: {onnx_model_path}")
+    print(f"Normalizer 參數路徑: {normalizer_path}")
 
-    print(f"Attempting to load JAX parameters from: {pkl_path.as_posix()}")
-    print(f"Attempting to load ONNX model from: {onnx_model_path.as_posix()}")
-
-    # 【關鍵】: 直接定義觀測規格，不再動態獲取
-    print("\n--- Defining Observation Specification ---")
-    obs_spec: Dict[str, Tuple[int, ...]] = {
-        'state': (48,),
-        'privileged_state': (123,) 
-    }
-    action_size = 12
-    print(f"Using hardcoded observation spec: {obs_spec}")
-    print(f"Action size: {action_size}")
-
-    # ===================================================================
-    #      步驟 3: 加載 JAX 參數並重建 JAX 推理函數
-    # ===================================================================
-    print("\n--- Step 3: Reconstructing the JAX inference function ---")
+    # --- 步驟 2: 加載所有必要的參數 ---
+    print("\n--- Step 2: Loading all parameters ---")
     try:
         with open(pkl_path, 'rb') as f:
-            # params 是一個元組: (normalizer_params, policy_params, value_params)
             params = pickle.load(f)
-        print("Parameters loaded successfully.")
-
-        # 獲取與訓練時完全相同的網路配置
-        ppo_params = locomotion_params.brax_ppo_config(env_name)
-        network_config = ppo_params.network_factory
+        normalizer_params, policy_params, _ = params
         
-        # 重建 PPO 網路
-        ppo_network = ppo_networks.make_ppo_networks(
-            observation_size=obs_spec,
-            action_size=action_size,
-            preprocess_observations_fn=running_statistics.normalize,
-            **network_config
-        )
+        normalizer_data = np.load(normalizer_path)
+        mean_48d = normalizer_data['mean_state']
+        std_48d = normalizer_data['std_state']
 
-        # 使用 Brax 的標準工廠函數來創建推理函數
-        make_inference_fn_factory = ppo_networks.make_inference_fn(ppo_network)
-        
-        # 使用加載的 params 創建最終的、帶有正確參數綁定的推理函數
-        inference_fn_with_key = make_inference_fn_factory(params, deterministic=True)
-        
-        # JIT 編譯以獲取優化的計算圖
-        jit_inference_fn_with_key = jax.jit(inference_fn_with_key)
-        
-        # 為了方便呼叫，創建一個只接收 obs 的版本
-        def final_jit_inference_fn(obs_dict):
-            actions, _ = jit_inference_fn_with_key(obs_dict, jax.random.PRNGKey(0))
-            return actions
-
-        print("JAX inference function reconstructed successfully.")
-
-    except FileNotFoundError:
-        print(f"FATAL ERROR: JAX checkpoint file not found at {pkl_path}.")
-        return
-    except Exception:
-        print(f"FATAL ERROR: Failed to reconstruct the JAX function.")
+        print("JAX 和 Normalizer 參數載入成功。")
+    except Exception as e:
+        print(f"致命錯誤: 加載參數失敗: {e}")
         traceback.print_exc()
         return
 
-    # ===================================================================
-    #      步驟 4: 準備驗證數據並運行 JAX 模型 (獲取標準答案)
-    # ===================================================================
-    print("\n--- Step 4: Preparing test data and running JAX model ---")
-    
-    key_for_test = jax.random.PRNGKey(42)
-    
-    # 使用 is_leaf 參數告訴 tree_map 不要深入元組
-    test_obs_dict_jax = jax.tree_util.tree_map(
-        lambda shape_tuple: jax.random.normal(key_for_test, (1,) + shape_tuple, dtype=jp.float32), 
-        obs_spec,
-        is_leaf=lambda x: isinstance(x, tuple)
+    # --- 步驟 3: 手動重建 JAX 推理函數 ---
+    print("\n--- Step 3: Manually reconstructing the JAX inference function ---")
+    policy_network = SimpleMLP(
+        layer_sizes=list(POLICY_HIDDEN_LAYER_SIZES) + [ACTION_SIZE * 2]
     )
-    test_obs_dict_numpy = {
-        key: np.array(value) for key, value in test_obs_dict_jax.items()
-    }
 
-    print("Running inference with JAX model...")
-    jax_output = final_jit_inference_fn(test_obs_dict_jax)
-    jax_output_np = np.array(jax_output)
-    print(f"JAX model output (action):\n{jax_output_np}")
-
-    # ===================================================================
-    #      步驟 5: 加載並運行 ONNX 模型 (最終修正版)
-    # ===================================================================
-    print("\n--- Step 5: Loading and running ONNX model ---")
+    @jax.jit
+    def jit_inference_fn(obs_single_step, norm_mean, norm_std, policy_p):
+        normalized_obs = (obs_single_step - norm_mean) / (norm_std + 1e-8)
+        logits = policy_network.apply(policy_p, normalized_obs)
+        loc, _ = jp.split(logits, 2, axis=-1)
+        action = jp.tanh(loc)
+        return action
     
+    print("JAX 推理函數手動重建成功。")
+
+    # --- 步驟 4: 準備完全一致的 48 維測試數據 ---
+    print("\n--- Step 4: Preparing identical 48-dim test data ---")
+    key_for_test = jax.random.PRNGKey(42)
+    raw_obs_jax = jax.random.normal(key_for_test, (1, POLICY_OBS_SIZE), dtype=jp.float32)
+    raw_obs_numpy = np.array(raw_obs_jax)
+
+    # --- 步驟 5: 運行 JAX 和 ONNX 模型 ---
+    print("\n--- Step 5: Running both models ---")
+    
+    # 運行 JAX
+    print("使用 JAX 模型進行推理...")
+    jax_output = jit_inference_fn(raw_obs_jax, mean_48d, std_48d, policy_params)
+    jax_output_np = np.array(jax_output)
+    print(f"JAX 模型輸出 (動作):\n{jax_output_np}")
+
+    # 運行 ONNX
+    print("\n使用 ONNX 模型進行推理...")
     onnx_output = None
     try:
-        if not onnx_model_path.exists():
-            print(f"ERROR: ONNX model file not found at {onnx_model_path}.")
-        else:
-            ort_session = ort.InferenceSession(str(onnx_model_path))
-            
-            # 【關鍵修改】: 創建一個只包含 ONNX 模型所需輸入的字典
-            # 我們知道它只需要 'state'
-            onnx_inputs = {
-                'state': test_obs_dict_numpy['state']
-            }
-
-            # 獲取並打印模型的真實輸入/輸出名稱，以便 debug
-            input_names = [inp.name for inp in ort_session.get_inputs()]
-            output_names = [out.name for out in ort_session.get_outputs()]
-            print(f"ONNX model expected input names: {input_names}")
-            print(f"ONNX model output names: {output_names}")
-
-            # 使用這個新的、更簡潔的輸入字典進行推理
-            onnx_output = ort_session.run(None, onnx_inputs)[0]
-            print(f"ONNX model output shape: {onnx_output.shape}")
-
+        normalized_obs_numpy = (raw_obs_numpy - mean_48d) / (std_48d + 1e-8)
+        
+        ort_session = ort.InferenceSession(str(onnx_model_path))
+        onnx_inputs = {'state': normalized_obs_numpy}
+        onnx_output = ort_session.run(None, onnx_inputs)[0]
+        print(f"ONNX 模型輸出 (動作):\n{onnx_output}")
     except Exception as e:
-        print(f"FATAL ERROR: Failed to run ONNX inference: {e}")
+        print(f"致命錯誤: 運行 ONNX 推理失敗: {e}")
         traceback.print_exc()
 
-    # ===================================================================
-    #      步驟 6: 比較 JAX 和 ONNX 的輸出結果
-    # ===================================================================
+    # --- 步驟 6: 比較結果 ---
     print("\n--- Step 6: Comparing JAX and ONNX outputs ---")
-    
     if jax_output_np is not None and onnx_output is not None:
         try:
             np.testing.assert_allclose(jax_output_np, onnx_output, rtol=1e-5, atol=1e-5)
-            print("\n✅ SUCCESS: ONNX model output perfectly matches JAX model output!")
+            print("\n✅ 成功: ONNX 模型輸出與 JAX 模型輸出完美匹配！")
         except AssertionError as e:
-            print("\n❌ FAILURE: ONNX model output DOES NOT match JAX model output!")
-            print("Detailed difference:")
+            print("\n❌ 失敗: ONNX 模型輸出與 JAX 模型輸出不匹配！")
+            print("詳細差異:")
             print(e)
-    else:
-        print("\n❌ FAILURE: Could not compare outputs because one of the models failed to produce an output.")
 
 if __name__ == '__main__':
     main()

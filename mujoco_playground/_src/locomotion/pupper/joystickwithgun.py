@@ -40,7 +40,7 @@ def default_config() -> config_dict.ConfigDict:
       #Kd=0.5,
       # cascade control
       cascade_pos_kp = consts.CASCADE_POS_KP,
-      cascade_vel_kp = consts.CASCADE_VEL_KP,
+      cascade_vel_kp = consts.CASCADE_VEL_KP_mA,
       cascade_max_target_velocity_rad_s = consts.CASCADE_MAX_TARGET_VELOCITY_RAD_S,
 
       action_repeat=1,
@@ -274,21 +274,65 @@ class JoystickWithGun(pupper_base.PupperEnv):
   #   state = state.replace(data=state.data.replace(qpos=qpos))
   #   return state
 
-  def step(self, state: mjx_env.State, action: jp.ndarray) -> mjx_env.State:
+  def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
     if self._config.pert_config.enable:
         state = self._maybe_apply_perturbation(state)
 
-    # Firearm recoil with randomness
+    # === Recoil RNG and logic ===
+    cfg = self._config.firearm_recoil
     rng = state.info["rng"]
-    if self._config.firearm_recoil.enable:
-        rng, recoil_rng = jax.random.split(rng)
-        state = self._apply_firearm_recoil(state, recoil_rng)
+    steps = state.info["firearm_recoil_steps"]
+    interval = state.info["firearm_recoil_interval"]
 
-    rng, key1, key2 = jax.random.split(rng, 3)
+    apply_recoil = (steps == interval)
+    time_to_fire = (interval - steps) <= cfg.warning_duration
+    state.info["firearm_recoil_warning"] = time_to_fire
 
-    motor_targets = self._default_pose + action * self._config.action_scale
-    data = mjx_env.step(self.mjx_model, state.data, motor_targets, self.n_substeps)
+    rng, rng_force, rng_interval = jax.random.split(rng, 3)
+    force_scale = jax.random.uniform(rng_force, minval=cfg.force_scale_range[0], maxval=cfg.force_scale_range[1])
+    new_interval = jax.random.randint(rng_interval, shape=(), minval=cfg.interval_range[0], maxval=cfg.interval_range[1] + 1)
 
+    def apply_recoil_force(data):
+        local_direction = jp.array(cfg.direction)
+        torso_quat = data.qpos[self._torso_qpos_slice]
+        world_direction = math.rotate(local_direction, torso_quat)
+        force = self._torso_mass * force_scale * world_direction / cfg.duration
+        xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+        xfrc_applied = xfrc_applied.at[self._torso_body_id, :3].set(force)
+        return data.replace(xfrc_applied=xfrc_applied)
+
+    def no_force(data):
+        xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+        return data.replace(xfrc_applied=xfrc_applied)
+
+    state_data = jax.lax.cond(cfg.enable & apply_recoil, apply_recoil_force, no_force, state.data)
+
+    state.info["firearm_recoil_steps"] = jp.where(cfg.enable & apply_recoil, 1, steps + 1)
+    state.info["firearm_recoil_interval"] = jp.where(cfg.enable & apply_recoil, new_interval, interval)
+
+    # Save RNG for later use
+    state.info["rng"] = rng
+
+    # === Cascade Control ===
+    target_q = self._default_pose + action * self._config.action_scale
+    MAX_MOTOR_CURRENT_mA = consts.MAX_MOTOR_TORQUE * consts.TORQUE_CONSTANT
+
+    def cascade_control_step(i, data):
+        current_q = data.qpos[7:]
+        current_v = data.qvel[6:]
+        pos_error = target_q - current_q
+        target_v = self.pos_kp * pos_error
+        target_v = jp.clip(target_v, -self.max_target_vel, self.max_target_vel)
+        vel_error = target_v - current_v
+        target_current_mA = self.vel_kp * vel_error
+        final_ctrl = jp.clip(target_current_mA, -MAX_MOTOR_CURRENT_mA, MAX_MOTOR_CURRENT_mA)
+        data = data.replace(ctrl=final_ctrl)
+        data = mjx.step(self.mjx_model, data)
+        return data
+
+    data = jax.lax.fori_loop(0, self.n_substeps, cascade_control_step, state_data)
+
+    # === Contact + reward tracking ===
     contact = jp.array([
         collision.geoms_colliding(data, geom_id, self._floor_geom_id)
         for geom_id in self._feet_geom_id
@@ -296,97 +340,47 @@ class JoystickWithGun(pupper_base.PupperEnv):
     contact_filt = contact | state.info["last_contact"]
     first_contact = (state.info["feet_air_time"] > 0.0) * contact_filt
     state.info["feet_air_time"] += self.dt
-    p_f = data.site_xpos[self._feet_site_id]
-    p_fz = p_f[..., -1]
+    p_fz = data.site_xpos[self._feet_site_id][..., -1]
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
     obs = self._get_obs(data, state.info)
     done = self._get_termination(data)
 
-    rewards = self._get_reward(
-        data, action, state.info, state.metrics, done, first_contact, contact
-    )
-    rewards = {
-        k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
-    }
+    rewards = self._get_reward(data, action, state.info, state.metrics, done, first_contact, contact)
+    rewards = {k: v * self._config.reward_config.scales[k] for k, v in rewards.items()}
     reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
 
-    state.info["last_last_act"] = state.info["last_act"]
-    state.info["last_act"] = action
-    state.info["steps_until_next_cmd"] -= 1
+    # === Bookkeeping ===
+    info = state.info
+    info["last_last_act"] = info["last_act"]
+    info["last_act"] = action
+    info["steps_until_next_cmd"] -= 1
 
-    # Update command + rng
-    rng, key1, key2 = jax.random.split(rng, 3)
-    state.info["command"] = jp.where(
-        state.info["steps_until_next_cmd"] <= 0,
-        self.sample_command(key1, state.info["command"]),
-        state.info["command"],
+    rng, key1, key2 = jax.random.split(info["rng"], 3)
+    info["command"] = jp.where(
+        info["steps_until_next_cmd"] <= 0,
+        self.sample_command(key1, info["command"]),
+        info["command"],
     )
-    state.info["steps_until_next_cmd"] = jp.where(
-        done | (state.info["steps_until_next_cmd"] <= 0),
+    info["steps_until_next_cmd"] = jp.where(
+        done | (info["steps_until_next_cmd"] <= 0),
         jp.round(jax.random.exponential(key2) * 5.0 / self.dt).astype(jp.int32),
-        state.info["steps_until_next_cmd"],
+        info["steps_until_next_cmd"],
     )
+    info["rng"] = rng
 
-    # Save RNG state for next step
-    state.info["rng"] = rng
+    info["feet_air_time"] *= ~contact
+    info["last_contact"] = contact
+    info["swing_peak"] *= ~contact
 
-    state.info["feet_air_time"] *= ~contact
-    state.info["last_contact"] = contact
-    state.info["swing_peak"] *= ~contact
+    metrics = state.metrics
     for k, v in rewards.items():
-        state.metrics[f"reward/{k}"] = v
-    state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
+        metrics[f"reward/{k}"] = v
+    metrics["swing_peak"] = jp.mean(info["swing_peak"])
 
     done = done.astype(reward.dtype)
-    state = state.replace(data=data, obs=obs, reward=reward, done=done)
-    return state
-    
-  def _apply_firearm_recoil(self, state: mjx_env.State, rng: jax.Array) -> mjx_env.State: 
-    cfg = self._config.firearm_recoil
-    steps = state.info["firearm_recoil_steps"]
-    interval = state.info["firearm_recoil_interval"]
+    return state.replace(data=data, obs=obs, reward=reward, done=done, info=info, metrics=metrics)
 
-    # Whether to apply recoil this step
-    apply_recoil = (steps == interval)
-    time_to_fire = (interval - steps) <= cfg.warning_duration
-    state.info["firearm_recoil_warning"] = time_to_fire
-
-    # Prepare RNG
-    rng, rng_force, rng_interval = jax.random.split(rng, 3)
-
-    # Sample new force magnitude and interval
-    force_scale = jax.random.uniform(rng_force, minval=cfg.force_scale_range[0], maxval=cfg.force_scale_range[1])
-    new_interval = jax.random.randint(rng_interval, (), minval=cfg.interval_range[0], maxval=cfg.interval_range[1] + 1)
-
-    def apply_force(state):
-        duration = cfg.duration
-        local_direction = jp.array(cfg.direction)  # local frame direction (e.g. (0, 1, 0))
-        torso_quat = state.data.qpos[self._torso_qpos_slice]
-        world_direction = math.rotate(local_direction, torso_quat)
-        force = self._torso_mass * force_scale * world_direction / duration
-
-        xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
-        xfrc_applied = xfrc_applied.at[self._torso_body_id, :3].set(force)
-
-        return state.replace(data=state.data.replace(xfrc_applied=xfrc_applied))
-
-    def no_force(state):
-        xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
-        return state.replace(data=state.data.replace(xfrc_applied=xfrc_applied))
-
-    # Conditionally apply force
-    state = jax.lax.cond(cfg.enable & apply_recoil, apply_force, no_force, state)
-
-    # Reset or increment recoil timer
-    reset_timer = cfg.enable & apply_recoil
-    state.info["firearm_recoil_steps"] = jp.where(reset_timer, 1, steps + 1)
-    state.info["firearm_recoil_interval"] = jp.where(reset_timer, new_interval, interval)
-
-    # Save updated RNG
-    state.info["rng"] = rng
-
-    return state
 
   def _get_termination(self, data: mjx.Data) -> jax.Array:
     fall_termination = self.get_upvector(data)[-1] < 0.0

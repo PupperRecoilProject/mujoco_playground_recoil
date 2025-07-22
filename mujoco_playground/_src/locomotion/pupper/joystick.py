@@ -44,7 +44,11 @@ def default_config() -> config_dict.ConfigDict:
 
       action_repeat=1,
       action_scale=0.5, #0.5
-      history_len=1, # This seems to be unused in the original code
+      # === 【核心修改】增加歷史觀測步長 ===
+      # 目的：為Agent提供時間序列信息，使其能夠推斷動態，補償缺失的線速度觀測。
+      # 50Hz 控制頻率下，10-15 步是一個很好的起始點。
+      history_len=15,
+      # === 修改結束 ===
       soft_joint_pos_limit_factor=0.95,
       noise_config=config_dict.create(
           level=1.0,
@@ -54,12 +58,13 @@ def default_config() -> config_dict.ConfigDict:
               gyro=0.2,
               gravity=0.05,
               linvel=0.1,
+              accelerometer=0.15,
           ),
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
-              tracking_lin_vel=1.0, # 1.0
-              tracking_ang_vel=0.5, # 0.5
+              tracking_lin_vel=2.0, # 1.0
+              tracking_ang_vel=1.0, # 0.5
               lin_vel_z=-0.5,
               ang_vel_xy=-0.05,
               orientation=-5.0,
@@ -262,7 +267,8 @@ class Joystick(pupper_base.PupperEnv):
         # XML 的 ctrlrange 也是 mA。
         # XML 的 gainprm 也是 N·m/mA。
         # 所以可以直接傳遞，不再需要任何單位轉換。
-        final_ctrl = final_ctrl/1000
+        # final_ctrl = final_ctrl/1000  # 從xml處理
+
         # 應用控制信號並執行一步模擬
         data = data.replace(ctrl=final_ctrl)
         data = mjx.step(self.mjx_model, data)
@@ -341,21 +347,25 @@ class Joystick(pupper_base.PupperEnv):
     joint_vel = data.qvel[6:]
     info["rng"], noise_rng = jax.random.split(info["rng"])
     noisy_joint_vel = (joint_vel + (2*jax.random.uniform(noise_rng, shape=joint_vel.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.joint_vel)
+    
     linvel = self.get_local_linvel(data)
+    accelerometer = self.get_accelerometer(data)
     info["rng"], noise_rng = jax.random.split(info["rng"])
-    noisy_linvel = (linvel + (2*jax.random.uniform(noise_rng, shape=linvel.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.linvel)
+    noisy_accelerometer = (accelerometer + (2*jax.random.uniform(noise_rng, shape=accelerometer.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.accelerometer)
+    #noisy_linvel = (linvel + (2*jax.random.uniform(noise_rng, shape=linvel.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.linvel)
     
     state_obs = jp.hstack([
-        noisy_linvel,
+        #noisy_linvel,
         noisy_gyro,
         noisy_gravity,
+        noisy_accelerometer,
         noisy_joint_angles - self._default_pose,
         noisy_joint_vel,
         info["last_act"],
         info["command"],
     ])
 
-    accelerometer = self.get_accelerometer(data)
+    #accelerometer = self.get_accelerometer(data) # 移到前面了
     angvel = self.get_global_angvel(data)
     feet_vel = data.sensordata[self._foot_linvel_sensor_adr].ravel()
 

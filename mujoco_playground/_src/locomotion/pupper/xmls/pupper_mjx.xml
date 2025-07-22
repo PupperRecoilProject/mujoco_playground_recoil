@@ -3,7 +3,7 @@
      ================================================================= -->
 <mujoco model="pupper_global_pd">
   <compiler angle="radian" meshdir="assets" autolimits="true"/>
-  <option iterations="10" ls_iterations="5" timestep="0.004" integrator="Euler">
+  <option iterations="2" ls_iterations="5" timestep="0.004" integrator="Euler">
     <flag eulerdamp="disable"/>
   </option>
   <custom>
@@ -19,7 +19,7 @@
       
       <!-- 2. Global controller template for ALL position actuators -->
       <!--    kp and kv are placeholders to be modified by the Python script -->
-      <general gainprm="3.333" ctrlrange="-5.0 5.0" gear="1" biastype="none"/>
+      <general gainprm="0.000333" ctrlrange="-5000.0 5000.0" gear="1" biastype="none"/>
 
 
       <!-- Joint-specific kinematics -->

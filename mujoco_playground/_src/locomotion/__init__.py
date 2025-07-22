@@ -48,7 +48,7 @@ from mujoco_playground._src.locomotion.t1 import randomize as t1_randomize
 #from mujoco_playground._src.locomotion.pupper import getup as pupper_getup
 from mujoco_playground._src.locomotion.pupper import joystick as pupper_joystick
 #from mujoco_playground._src.locomotion.pupper import joysticks_sac as pupper_joystick_sac
-#from mujoco_playground._src.locomotion.pupper import joystickwithgun as pupper_joystickwithgun
+from mujoco_playground._src.locomotion.pupper import joystickwithgun as pupper_joystickwithgun
 from mujoco_playground._src.locomotion.pupper import randomize as pupper_randomize
 # ==============================================================================
 
@@ -83,7 +83,7 @@ _envs = {
     # ==============================================================================
     "PupperJoystickFlatTerrain": functools.partial(pupper_joystick.Joystick, task="flat_terrain"),
     #"PupperJoystickSacFlatTerrain": functools.partial(pupper_joystick_sac.JoystickSac, task="flat_terrain"),
-    #"PupperJoystickWithGun": functools.partial(pupper_joystickwithgun.JoystickWithGun, task="flat_terrain"),
+    "PupperJoystickWithGun": functools.partial(pupper_joystickwithgun.JoystickWithGun, task="flat_terrain"),
     # 如果你未來創建了崎嶇地形的XML，可以 легко 添加：
     # "PupperJoystickRoughTerrain": functools.partial(pupper_joystick.Joystick, task="rough_terrain"),
     #"PupperGetup": pupper_getup.Getup,
@@ -118,7 +118,7 @@ _cfgs = {
     # ==============================================================================
     "PupperJoystickFlatTerrain": pupper_joystick.default_config,
     #"PupperJoystickSacFlatTerrain": pupper_joystick_sac.default_config,
-    #"PupperJoystickWithGun": pupper_joystickwithgun.default_config,
+    "PupperJoystickWithGun": pupper_joystickwithgun.default_config,
     #"PupperGetup": pupper_getup.default_config,
     # ==============================================================================
 }
@@ -143,7 +143,7 @@ _randomizer = {
     # ==============================================================================
     "PupperJoystickFlatTerrain": pupper_randomize.domain_randomize,
     #"PupperJoystickSacFlatTerrain": pupper_randomize.domain_randomize,
-    #"PupperJoystickWithGun": pupper_randomize.domain_randomize,
+    "PupperJoystickWithGun": pupper_randomize.domain_randomize,
     #"PupperGetup": pupper_randomize.domain_randomize,
     # ==============================================================================
 }

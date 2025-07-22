@@ -99,7 +99,7 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
   elif env_name in ("PupperJoystickFlatTerrain", "PupperJoystickRoughTerrain", "PupperJoystickWithGun"):
     # We copy the Go1Joystick config as a starting point.
     # Pupper is smaller and lighter, so might need fewer timesteps.
-    rl_config.num_timesteps = 100_000_000 # Reduced from Go1's 200M
+    rl_config.num_timesteps = 200_000_000 # Reduced from Go1's 200M
     rl_config.num_evals = 32
     rl_config.num_resets_per_eval = 1
     rl_config.network_factory = config_dict.create(

@@ -71,7 +71,7 @@ def default_config() -> config_dict.ConfigDict:
               dof_pos_limits=-1.0,
               pose=0.1,             # 0.5
               termination=-1.0,
-              stand_still=-1.0,
+              stand_still=-5.0,
               torques=-0.0002, #-0.0002
               action_rate=-0.01,
               energy=-0.001,

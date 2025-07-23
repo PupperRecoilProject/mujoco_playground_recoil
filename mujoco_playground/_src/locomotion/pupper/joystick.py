@@ -86,9 +86,9 @@ def default_config() -> config_dict.ConfigDict:
       ),
       pert_config=config_dict.create(
           enable=False,  # False
-          velocity_kick=[0.0, 3.0],
+          velocity_kick=[0.1, 0.3],
           kick_durations=[0.05, 0.2],
-          kick_wait_times=[1.0, 3.0],
+          kick_wait_times=[2.5, 5.0],
       ),
       command_config=config_dict.create(
           a=[0.3, 0.5, 0.3], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]

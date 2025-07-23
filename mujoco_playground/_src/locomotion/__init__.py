@@ -84,8 +84,8 @@ _envs = {
     "PupperJoystickFlatTerrain": functools.partial(pupper_joystick.Joystick, task="flat_terrain"),
     #"PupperJoystickSacFlatTerrain": functools.partial(pupper_joystick_sac.JoystickSac, task="flat_terrain"),
     "PupperJoystickWithGun": functools.partial(pupper_joystickwithgun.JoystickWithGun, task="flat_terrain"),
-    # 如果你未來創建了崎嶇地形的XML，可以 легко 添加：
-    # "PupperJoystickRoughTerrain": functools.partial(pupper_joystick.Joystick, task="rough_terrain"),
+    # 如果你未來創建了崎嶇地形的XML，可以添加：
+    "PupperJoystickRoughTerrain": functools.partial(pupper_joystick.Joystick, task="rough_terrain"),
     #"PupperGetup": pupper_getup.Getup,
     # Pupper 沒有 handstand 任務，所以我們不添加
     # ==============================================================================
@@ -117,6 +117,7 @@ _cfgs = {
     # Step 3: 註冊你的 Pupper 環境的預設配置
     # ==============================================================================
     "PupperJoystickFlatTerrain": pupper_joystick.default_config,
+    "PupperJoystickRoughTerrain": pupper_joystick.default_config,
     #"PupperJoystickSacFlatTerrain": pupper_joystick_sac.default_config,
     "PupperJoystickWithGun": pupper_joystickwithgun.default_config,
     #"PupperGetup": pupper_getup.default_config,
@@ -142,6 +143,7 @@ _randomizer = {
     # 我們的 `randomize.py` 檔案是通用的，所以可以應用於多個任務
     # ==============================================================================
     "PupperJoystickFlatTerrain": pupper_randomize.domain_randomize,
+    "PupperJoystickRoughTerrain": pupper_randomize.domain_randomize,
     #"PupperJoystickSacFlatTerrain": pupper_randomize.domain_randomize,
     "PupperJoystickWithGun": pupper_randomize.domain_randomize,
     #"PupperGetup": pupper_randomize.domain_randomize,

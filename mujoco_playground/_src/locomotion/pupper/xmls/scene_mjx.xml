@@ -18,10 +18,24 @@
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="1 1 1" rgb2="1 1 1" markrgb="0 0 0"
       width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0"/>
+    <hfield name="terrain" nrow="256" ncol="256" size="10 10 0 1"/>
   </asset>
 
   <worldbody>
-    <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.6" condim="3" contype="1" conaffinity="0"/>
+    <!-- 移除舊的平面地板 -->
+    <!-- <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.6" condim="3" contype="1" conaffinity="0"/> -->
+
+    <!-- === 【核心修改 2】在世界中放置高度場 === -->
+    <!--
+      type:       必須是 "hfield"。
+      hfield:     引用我們在 <asset> 中定義的高度場的名字 "terrain"。
+      material:   可以繼續使用 groundplane 材質，使其看起來像棋盤格。
+      pos:        設置地形的中心位置。 (0, 0, 0) 意味著地形的中心在原點。
+      quat:       設置地形的姿態（通常保持默認值）。
+    -->
+    <geom name="terrain_geom" type="hfield" hfield="terrain" material="groundplane"
+          pos="0 0 0" quat="1 0 0 0" priority="1" friction="0.8" condim="3"/>
+    <!-- === 修改結束 === -->
   </worldbody>
 
   <keyframe>

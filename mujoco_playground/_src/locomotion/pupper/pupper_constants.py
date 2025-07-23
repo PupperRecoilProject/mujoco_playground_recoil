@@ -27,13 +27,16 @@ ROOT_PATH = mjx_env.ROOT_PATH / "locomotion" / "pupper"
 # 我們可以將所有任務都指向這個檔案，或者為未來擴展預留位置
 # 這裡我們只定義一個基礎的平地場景
 PUPPER_FLAT_TERRAIN_XML = ROOT_PATH / "xmls" / "scene_mjx.xml"
+PUPPER_TERRAIN_SCENE_XML = ROOT_PATH / "xmls" / "scene_mjx.xml"
 
 def task_to_xml(task_name: str) -> epath.Path:
   """Maps a task name to a MuJoCo XML file path."""
   # 您可以根據未來需求擴展這個字典，例如添加 "rough_terrain"
   return {
+      # 平地場景訓練
       "flat_terrain": PUPPER_FLAT_TERRAIN_XML,
-      # "rough_terrain": PUPPER_ROUGH_TERRAIN_XML, # 未來可以添加
+      #  hfield 場景 (用於地形訓練)
+      "terrain_scene": PUPPER_TERRAIN_SCENE_XML,
   }[task_name]
 
 

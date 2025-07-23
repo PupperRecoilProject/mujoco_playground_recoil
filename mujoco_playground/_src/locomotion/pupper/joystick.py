@@ -66,7 +66,7 @@ def default_config() -> config_dict.ConfigDict:
               tracking_lin_vel=2.0, # 1.0
               tracking_ang_vel=1.0, # 0.5
               lin_vel_z=-0.5,
-              ang_vel_xy=-0.05,
+              ang_vel_xy=-1.0, # -0.05
               orientation=-5.0,
               dof_pos_limits=-1.0,
               pose=0.1,             # 0.5

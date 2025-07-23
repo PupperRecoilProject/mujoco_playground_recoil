@@ -1,6 +1,6 @@
 ## Version
 
-### V0.0 Stable Baseline3 PPO
+### V0.0 Stable Baselines3 PPO
 Using Gymnasium + Stable Baselines3 + MuJoCo  
 #### V0.1 Major reward structure revisions
 

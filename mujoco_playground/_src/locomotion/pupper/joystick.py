@@ -91,7 +91,7 @@ def default_config() -> config_dict.ConfigDict:
           kick_wait_times=[2.5, 5.0],
       ),
       command_config=config_dict.create(
-          a=[0.3, 0.5, 0.3], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
+          a=[0.4, 0.6, 0.4], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
           b=[0.25, 0.9, 0.5],# b=[0.9, 0.25, 0.5]
       ),
   )

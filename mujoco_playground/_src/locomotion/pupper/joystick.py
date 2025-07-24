@@ -63,15 +63,15 @@ def default_config() -> config_dict.ConfigDict:
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
-              tracking_lin_vel=2.0, # 1.0
-              tracking_ang_vel=1.0, # 0.5
+              tracking_lin_vel=4.0, # 1.0
+              tracking_ang_vel=2.0, # 0.5
 
               # +++ 新增獎勵項: 俯仰角追蹤 +++
-              tracking_pitch=5,  # 推薦一個較高的權重，因為姿態控制很重要
+              tracking_pitch=5.0,  # 推薦一個較高的權重，因為姿態控制很重要
 
               lin_vel_z=-0.5,
               ang_vel_xy=-0.1, # -0.05
-              orientation=-2.0, # -5.0
+              orientation=-1.0, # -5.0
               dof_pos_limits=-1.0,
               pose=0.1,             # 0.5
               termination=-1.0,
@@ -96,7 +96,7 @@ def default_config() -> config_dict.ConfigDict:
       ),
       command_config=config_dict.create(
           a=[0.4, 0.6, 0.4, 0.5], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
-          b=[0.5, 0.9, 0.5, 0.7],# b=[0.9, 0.25, 0.5]
+          b=[0.5, 0.9, 0.5, 0.95],# b=[0.9, 0.25, 0.5]
       ),
   )
   return config
@@ -357,12 +357,17 @@ class Joystick(pupper_base.PupperEnv):
     info["rng"], noise_rng = jax.random.split(info["rng"])
     noisy_accelerometer = (accelerometer + (2*jax.random.uniform(noise_rng, shape=accelerometer.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.accelerometer)
     #noisy_linvel = (linvel + (2*jax.random.uniform(noise_rng, shape=linvel.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.linvel)
-    
+    current_pitch = self.get_pitch(data)
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_current_pitch = (current_pitch + (2*jax.random.uniform(noise_rng, shape=current_pitch.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.linvel)
+
+
     state_obs = jp.hstack([
         #noisy_linvel,
         noisy_gyro,
         noisy_gravity,
         noisy_accelerometer,
+        noisy_current_pitch,
         noisy_joint_angles - self._default_pose,
         noisy_joint_vel,
         info["last_act"],
@@ -375,7 +380,7 @@ class Joystick(pupper_base.PupperEnv):
 
     privileged_state = jp.hstack([
         state_obs,
-        gyro, accelerometer, gravity, linvel, angvel,
+        gyro, accelerometer, gravity, current_pitch, linvel, angvel,
         joint_angles - self._default_pose,
         joint_vel,
         data.actuator_force,

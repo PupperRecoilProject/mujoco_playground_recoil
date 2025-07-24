@@ -95,9 +95,9 @@ def default_config() -> config_dict.ConfigDict:
       ),
       command_config=config_dict.create(
           # Uniform distribution for command amplitude.
-          a=[0.3, 0.4, 0.3], #Vx,Vy,Omega
+          a=[0.3, 0.4, 0.3, 0.5], #Vx,Vy,Omega
           # Probability of not zeroing out new command.
-          b=[0.9, 0.25, 0.5],
+          b=[0.9, 0.25, 0.5, 0.7],
       ),
       
       
@@ -218,6 +218,8 @@ class JoystickWithGun(pupper_base.PupperEnv):
     steps_until_next_cmd = jp.round(time_until_next_cmd / self.dt).astype(
         jp.int32
     )
+    #print(self._cmd_a)  # Debugging line to check command shape
+    self._cmd_a = jp.array(self._config.command_config.a)
     cmd = jax.random.uniform(
         key2, shape=(4,), minval=-self._cmd_a, maxval=self._cmd_a
     )
@@ -494,6 +496,7 @@ class JoystickWithGun(pupper_base.PupperEnv):
         "tracking_ang_vel": self._reward_tracking_ang_vel(
             info["command"], self.get_gyro(data)
         ),
+        "tracking_pitch": self._reward_tracking_pitch(info["command"], self.get_pitch(data)),
         "lin_vel_z": self._cost_lin_vel_z(self.get_global_linvel(data)),
         "ang_vel_xy": self._cost_ang_vel_xy(self.get_global_angvel(data)),
         "orientation": self._cost_orientation(self.get_upvector(data)),

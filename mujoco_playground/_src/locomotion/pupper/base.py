@@ -120,7 +120,7 @@ class PupperEnv(mjx_env.MjxEnv):
   def get_pitch(self, data: mjx.Data) -> jax.Array:
     """Calculates and returns the pitch angle of the torso in radians."""
     up_vector = self.get_upvector(data)
-    return -jp.arcsin(up_vector[0])
+    return -jp.arcsin(up_vector[1])
 
   def get_accelerometer(self, data: mjx.Data) -> jax.Array:
     """Returns accelerometer readings from the IMU."""

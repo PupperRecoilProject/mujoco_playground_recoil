@@ -1,3 +1,26 @@
+## Version
+
+### V0.0 Stable Baselines3 PPO
+Using Gymnasium + Stable Baselines3 + MuJoCo  
+#### V0.1 Major reward structure revisions
+
+### V1.0 BRAX PPO (Symmetric Actor-Critic)
+Using MJX + BRAX PPO, inspired by Google's Barkour project
+
+### V2.0 BRAX PPO (Asymmetric Actor-Critic)
+Using MJX + BRAX PPO, inspired by Unitree GO1  
+#### V2.1 Added BRAX SAC
+Using MJX + BRAX SAC  
+#### V2.2 Major modifications to `pupper.xml`
+Switched from `position` control to `general` + `cascade`  
+#### V2.3 Observation modifications
+Replaced `noisy_linvel` with `noisy_accelerometer`  
+Increased `history_len` from 1 to 15  
+##### V2.3.1 Modified `scene.xml`
+More general scene selection support
+
+---
+
 # MuJoCo Playground
 
 [![Build](https://img.shields.io/github/actions/workflow/status/google-deepmind/mujoco_playground/ci.yml?branch=main)](https://github.com/google-deepmind/mujoco_playground/actions)

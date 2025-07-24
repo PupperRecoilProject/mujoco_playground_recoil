@@ -65,9 +65,13 @@ def default_config() -> config_dict.ConfigDict:
           scales=config_dict.create(
               tracking_lin_vel=2.0, # 1.0
               tracking_ang_vel=1.0, # 0.5
+
+              # +++ 新增獎勵項: 俯仰角追蹤 +++
+              tracking_pitch=5,  # 推薦一個較高的權重，因為姿態控制很重要
+
               lin_vel_z=-0.5,
               ang_vel_xy=-0.1, # -0.05
-              orientation=-5.0,
+              orientation=-2.0, # -5.0
               dof_pos_limits=-1.0,
               pose=0.1,             # 0.5
               termination=-1.0,
@@ -86,13 +90,13 @@ def default_config() -> config_dict.ConfigDict:
       ),
       pert_config=config_dict.create(
           enable=False,  # False
-          velocity_kick=[0.1, 0.3],
+          velocity_kick=[0.2, 0.5],
           kick_durations=[0.05, 0.2],
           kick_wait_times=[2.5, 5.0],
       ),
       command_config=config_dict.create(
-          a=[0.4, 0.6, 0.4], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
-          b=[0.25, 0.9, 0.5],# b=[0.9, 0.25, 0.5]
+          a=[0.4, 0.6, 0.4, 0.5], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
+          b=[0.5, 0.9, 0.5, 0.7],# b=[0.9, 0.25, 0.5]
       ),
   )
   return config
@@ -196,7 +200,7 @@ class Joystick(pupper_base.PupperEnv):
     rng, key1, key2 = jax.random.split(rng, 3)
     time_until_next_cmd = jax.random.exponential(key1) * 5.0
     steps_until_next_cmd = jp.round(time_until_next_cmd / self.dt).astype(jp.int32)
-    cmd = self.sample_command(key2, jp.zeros(3)) # Start with a random command
+    cmd = jax.random.uniform(key2, shape=(4,), minval=-self._cmd_a, maxval=self._cmd_a)
 
     info = {
         "rng": rng,
@@ -392,6 +396,9 @@ class Joystick(pupper_base.PupperEnv):
     return {
         "tracking_lin_vel": self._reward_tracking_lin_vel(info["command"], self.get_local_linvel(data)),
         "tracking_ang_vel": self._reward_tracking_ang_vel(info["command"], self.get_gyro(data)),
+        # +++ 新增獎勵項 +++
+        "tracking_pitch": self._reward_tracking_pitch(info["command"], self.get_pitch(data)),
+
         "lin_vel_z": self._cost_lin_vel_z(self.get_global_linvel(data)),
         "ang_vel_xy": self._cost_ang_vel_xy(self.get_global_angvel(data)),
         "orientation": self._cost_orientation(self.get_upvector(data)),
@@ -415,6 +422,11 @@ class Joystick(pupper_base.PupperEnv):
   def _reward_tracking_ang_vel(self, commands: jax.Array, ang_vel: jax.Array) -> jax.Array:
     ang_vel_error = jp.square(commands[2] - ang_vel[2])
     return jp.exp(-ang_vel_error / self._config.reward_config.tracking_sigma)
+  
+  def _reward_tracking_pitch(self, command: jax.Array, current_pitch: jax.Array) -> jax.Array:
+    pitch_error = jp.square(command[3] - current_pitch)
+    return jp.exp(-pitch_error / self._config.reward_config.tracking_sigma)
+
 
   def _cost_lin_vel_z(self, global_linvel) -> jax.Array:
     return jp.square(global_linvel[2])
@@ -513,7 +525,7 @@ class Joystick(pupper_base.PupperEnv):
   def sample_command(self, rng: jax.Array, x_k: jax.Array) -> jax.Array:
     # This function is general and does not need modification
     rng, y_rng, w_rng, z_rng = jax.random.split(rng, 4)
-    y_k = jax.random.uniform(y_rng, shape=(3,), minval=-self._cmd_a, maxval=self._cmd_a)
-    z_k = jax.random.bernoulli(z_rng, self._cmd_b, shape=(3,))
-    w_k = jax.random.bernoulli(w_rng, 0.5, shape=(3,))
+    y_k = jax.random.uniform(y_rng, shape=(4,), minval=-self._cmd_a, maxval=self._cmd_a)
+    z_k = jax.random.bernoulli(z_rng, self._cmd_b, shape=(4,))
+    w_k = jax.random.bernoulli(w_rng, 0.5, shape=(4,))
     return x_k - w_k * (x_k - y_k * z_k)

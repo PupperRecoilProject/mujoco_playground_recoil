@@ -63,6 +63,7 @@ def default_config() -> config_dict.ConfigDict:
               # Tracking.
               tracking_lin_vel=2.5, #default: 1.0,
               tracking_ang_vel=1.0, #default: 0.5,
+              tracking_pitch=1.5,
               # Base reward.
               lin_vel_z=-0.5, #default: -0.5,
               ang_vel_xy=-0.10, #default: -0.05,
@@ -218,7 +219,7 @@ class JoystickWithGun(pupper_base.PupperEnv):
         jp.int32
     )
     cmd = jax.random.uniform(
-        key2, shape=(3,), minval=-self._cmd_a, maxval=self._cmd_a
+        key2, shape=(4,), minval=-self._cmd_a, maxval=self._cmd_a
     )
 
     rng, key1, key2, rng = jax.random.split(rng, 4)
@@ -534,6 +535,10 @@ class JoystickWithGun(pupper_base.PupperEnv):
     # Tracking of angular velocity commands (yaw).
     ang_vel_error = jp.square(commands[2] - ang_vel[2])
     return jp.exp(-ang_vel_error / self._config.reward_config.tracking_sigma)
+  
+  def _reward_tracking_pitch(self, command: jax.Array, current_pitch: jax.Array) -> jax.Array:
+    pitch_error = jp.square(command[3] - current_pitch)
+    return jp.exp(-pitch_error / self._config.reward_config.tracking_sigma)
 
   # Base-related rewards.
 
@@ -692,9 +697,9 @@ class JoystickWithGun(pupper_base.PupperEnv):
   def sample_command(self, rng: jax.Array, x_k: jax.Array) -> jax.Array:
     rng, y_rng, w_rng, z_rng = jax.random.split(rng, 4)
     y_k = jax.random.uniform(
-        y_rng, shape=(3,), minval=-self._cmd_a, maxval=self._cmd_a
+        y_rng, shape=(4,), minval=-self._cmd_a, maxval=self._cmd_a
     )
-    z_k = jax.random.bernoulli(z_rng, self._cmd_b, shape=(3,))
-    w_k = jax.random.bernoulli(w_rng, 0.5, shape=(3,))
+    z_k = jax.random.bernoulli(z_rng, self._cmd_b, shape=(4,))
+    w_k = jax.random.bernoulli(w_rng, 0.5, shape=(4,))
     x_kp1 = x_k - w_k * (x_k - y_k * z_k)
     return x_kp1

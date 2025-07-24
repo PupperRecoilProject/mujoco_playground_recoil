@@ -117,6 +117,11 @@ class PupperEnv(mjx_env.MjxEnv):
         self.mj_model, data, consts.LOCAL_LINVEL_SENSOR
     )
 
+  def get_pitch(self, data: mjx.Data) -> jax.Array:
+    """Calculates and returns the pitch angle of the torso in radians."""
+    up_vector = self.get_upvector(data)
+    return -jp.arcsin(up_vector[0])
+
   def get_accelerometer(self, data: mjx.Data) -> jax.Array:
     """Returns accelerometer readings from the IMU."""
     return mjx_env.get_sensor_data(

@@ -73,7 +73,7 @@ def draw_joystick_command(
   scn.ngeom += 1
   scn.geoms[scn.ngeom - 1].category = mujoco.mjtCatBit.mjCAT_DECOR
 
-  vx, vy, vtheta = cmd
+  vx, vy, vtheta = cmd[:3]
 
   angle = theta + vtheta
   rotation_matrix = np.array(

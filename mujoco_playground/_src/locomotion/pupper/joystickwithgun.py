@@ -55,6 +55,7 @@ def default_config() -> config_dict.ConfigDict:
               gyro=0.2,
               gravity=0.05,
               linvel=0.1,
+              accelerometer=0.15,
           ),
       ),
       reward_config=config_dict.create(
@@ -434,10 +435,13 @@ class JoystickWithGun(pupper_base.PupperEnv):
         * self._config.noise_config.scales.linvel
     )
 
+    accelerometer = self.get_accelerometer(data)
+    noisy_accelerometer = (accelerometer + (2*jax.random.uniform(noise_rng, shape=accelerometer.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.accelerometer)
+
     state = jp.hstack([
-        noisy_linvel,  # 3
         noisy_gyro,  # 3
         noisy_gravity,  # 3
+        noisy_accelerometer,  # 3  
         noisy_joint_angles - self._default_pose,  # 12
         noisy_joint_vel,  # 12
         info["last_act"],  # 12
@@ -445,7 +449,7 @@ class JoystickWithGun(pupper_base.PupperEnv):
         jp.array([info["firearm_recoil_warning"]], dtype=jp.float32),
     ])
 
-    accelerometer = self.get_accelerometer(data)
+    #accelerometer = self.get_accelerometer(data)
     angvel = self.get_global_angvel(data)
     feet_vel = data.sensordata[self._foot_linvel_sensor_adr].ravel()
 

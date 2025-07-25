@@ -128,6 +128,9 @@ class JoystickWithGun(pupper_base.PupperEnv):
     )
     self._post_init()
     self._torso_qpos_slice = slice(3, 7)
+    #assert len(config.command_config.a) == 4
+    #assert len(config.command_config.b) == 4
+    #print("command_config.a =", self._config.command_config.a)
 
   def _post_init(self) -> None:
     self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
@@ -219,10 +222,10 @@ class JoystickWithGun(pupper_base.PupperEnv):
         jp.int32
     )
     #print(self._cmd_a)  # Debugging line to check command shape
-    self._cmd_a = jp.array(self._config.command_config.a)
-    cmd = jax.random.uniform(
-        key2, shape=(4,), minval=-self._cmd_a, maxval=self._cmd_a
-    )
+    a = jp.array(self._config.command_config.a, dtype=jp.float32)
+    if a.shape != (4,):
+        raise ValueError(f"`command_config.a` must be shape (4,), but got {a.shape}")
+    cmd = jax.random.uniform(key, shape=(4,)) * 2 * a - a  # Sample from [-a, a]
 
     rng, key1, key2, rng = jax.random.split(rng, 4)
     firearm_recoil_next_interval = jax.random.randint(key1, (), minval=80, maxval=150)

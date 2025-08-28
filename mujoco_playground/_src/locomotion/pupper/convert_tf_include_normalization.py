@@ -96,12 +96,12 @@ def main():
     """主函數"""
     # --- 步驟 0: 配置 ---
     print("\n--- Step 0: Configuration ---")
-    env_name = 'PupperJoystickFlatTerrain'
+    env_name = 'PupperJoystickWithGun'
     CHECKPOINT_DIR = epath.Path("checkpoints/" + env_name).resolve()
     
-    SINGLE_STEP_OBS_SIZE = 48
+    SINGLE_STEP_OBS_SIZE = 51
     HISTORY_LEN = 15
-    POLICY_OBS_SIZE = SINGLE_STEP_OBS_SIZE * HISTORY_LEN # 720
+    POLICY_OBS_SIZE = SINGLE_STEP_OBS_SIZE * HISTORY_LEN # 720 ->750 -> 765
     ACTION_SIZE = 12
     POLICY_HIDDEN_LAYER_SIZES = (512, 256, 128)
 
@@ -110,7 +110,7 @@ def main():
     # ... (載入參數的邏輯保持不變) ...
     try:
         steps = [int(p.name) for p in CHECKPOINT_DIR.iterdir() if p.is_dir() and p.name.isdigit()]
-        latest_step = 203161600 #max(steps) if steps else None
+        latest_step = 101580800 #max(steps) if steps else None
         if not latest_step: raise FileNotFoundError("找不到任何 checkpoint。")
 
         pkl_path = CHECKPOINT_DIR / str(latest_step) / "params.pkl"
@@ -130,7 +130,7 @@ def main():
         original_mean = np.array(normalizer_params.mean['state'])
         original_std = np.array(normalizer_params.std['state'])
         
-        # 2. 手動將 Normalizer 參數擴展到 720 維
+        # 2. 手動將 Normalizer 參數擴展到 720 ->750 維
         tiled_mean = np.tile(original_mean, HISTORY_LEN)
         tiled_std = np.tile(original_std, HISTORY_LEN)
         

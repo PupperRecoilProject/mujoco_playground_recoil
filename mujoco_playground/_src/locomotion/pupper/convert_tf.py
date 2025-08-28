@@ -81,11 +81,11 @@ def main():
     """主函數"""
     # --- 步驟 0: 配置 ---
     print("\n--- Step 0: Configuration ---")
-    env_name = 'PupperJoystickFlatTerrain'
+    env_name = 'PupperJoystickWithGun'
     CHECKPOINT_DIR = epath.Path("checkpoints/" + env_name).resolve()
-    
-    # 核心模型的輸入是單步 48 維
-    POLICY_OBS_SIZE = 48
+
+    # 核心模型的輸入是單步 51 維
+    POLICY_OBS_SIZE = 51
     ACTION_SIZE = 12
     POLICY_HIDDEN_LAYER_SIZES = (512, 256, 128)
 
@@ -93,7 +93,7 @@ def main():
     print(f"\n--- Step 1: Loading JAX parameters ---")
     try:
         steps = [int(p.name) for p in CHECKPOINT_DIR.iterdir() if p.is_dir() and p.name.isdigit()]
-        latest_step = 203161600 #max(steps) if steps else None
+        latest_step = 101580800 #max(steps) if steps else None
         if not latest_step: raise FileNotFoundError("找不到任何 checkpoint。")
 
         pkl_path = CHECKPOINT_DIR / str(latest_step) / "params.pkl"

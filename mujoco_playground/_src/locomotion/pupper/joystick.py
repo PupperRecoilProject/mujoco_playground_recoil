@@ -63,15 +63,15 @@ def default_config() -> config_dict.ConfigDict:
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
-              tracking_lin_vel=4.0, # 1.0
-              tracking_ang_vel=2.0, # 0.5
+              tracking_lin_vel=2.5, # 1.0
+              tracking_ang_vel=1.5, # 0.5
 
               # +++ 新增獎勵項: 俯仰角追蹤 +++
-              tracking_pitch=5.0,  # 推薦一個較高的權重，因為姿態控制很重要
+              tracking_pitch=1.0,  # 推薦一個較高的權重，因為姿態控制很重要
 
               lin_vel_z=-0.5,
-              ang_vel_xy=-0.1, # -0.05
-              orientation=-1.0, # -5.0
+              ang_vel_xy=-0.05, # -0.05
+              orientation=-5.0, # -5.0
               dof_pos_limits=-1.0,
               pose=0.1,             # 0.5
               termination=-1.0,
@@ -82,21 +82,21 @@ def default_config() -> config_dict.ConfigDict:
               feet_clearance=-2.0,
               feet_height=-0.02,
               feet_slip=-0.1,
-              feet_air_time=0,  #0.1
+              feet_air_time=0.1,  #0.1
           ),
           tracking_sigma=0.25,
           # Step 2: Adjust max_foot_height for the shorter Pupper
           max_foot_height=0.06, # Go1 was 0.1, Pupper legs are shorter
       ),
       pert_config=config_dict.create(
-          enable=False,  # False
+          enable=True,  # False
           velocity_kick=[0.2, 0.5],
           kick_durations=[0.05, 0.2],
           kick_wait_times=[2.5, 5.0],
       ),
       command_config=config_dict.create(
-          a=[0.4, 0.6, 0.4, 0.5], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
-          b=[0.5, 0.9, 0.5, 0.95],# b=[0.9, 0.25, 0.5]
+          a=[0.4, 0.6, 0.4, 0.0], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
+          b=[0.5, 0.9, 0.5, 0.5],# b=[0.9, 0.25, 0.5]
       ),
   )
   return config

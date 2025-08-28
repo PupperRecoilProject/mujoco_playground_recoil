@@ -61,9 +61,9 @@ def default_config() -> config_dict.ConfigDict:
       reward_config=config_dict.create(
           scales=config_dict.create(
               # Tracking.
-              tracking_lin_vel=2.5, #default: 1.0,
-              tracking_ang_vel=1.0, #default: 0.5,
-              tracking_pitch=1.5,
+              tracking_lin_vel=3.5, #default: 1.0,
+              tracking_ang_vel=0.5, #default: 0.5,
+              tracking_pitch=1.5, #default: 1.5,
               # Base reward.
               lin_vel_z=-0.5, #default: -0.5,
               ang_vel_xy=-0.10, #default: -0.05,
@@ -95,7 +95,7 @@ def default_config() -> config_dict.ConfigDict:
       ),
       command_config=config_dict.create(
           # Uniform distribution for command amplitude.
-          a=[0.3, 0.4, 0.3, 0.5], #Vx,Vy,Omega
+          a=[0.0, 0.0, 0.0, 0.5], #Vx,Vy,Omega
           # Probability of not zeroing out new command.
           b=[0.9, 0.25, 0.5, 0.7],
       ),
@@ -104,8 +104,8 @@ def default_config() -> config_dict.ConfigDict:
       firearm_recoil=config_dict.create(
           enable=True,
           interval_range=[50, 200],  # Randomized interval between 80 and 150 steps.
-          warning_duration=1,
-          duration=0.2,
+          warning_duration=3,
+          duration=0.2,  # default: 0.2
           direction=[0.0, 1.0, 0.0],  # +Y in local frame
           force_scale_range=[4.1, 4.3]  # randomization range for velocity equivalent
       ),
@@ -444,14 +444,20 @@ class JoystickWithGun(pupper_base.PupperEnv):
     accelerometer = self.get_accelerometer(data)
     noisy_accelerometer = (accelerometer + (2*jax.random.uniform(noise_rng, shape=accelerometer.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.accelerometer)
 
+    current_pitch = self.get_pitch(data)
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_current_pitch = (current_pitch + (2*jax.random.uniform(noise_rng, shape=current_pitch.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.linvel)
+
+
     state = jp.hstack([
         noisy_gyro,  # 3
         noisy_gravity,  # 3
-        noisy_accelerometer,  # 3  
+        noisy_accelerometer,  # 3
+        noisy_current_pitch,  # 1
         noisy_joint_angles - self._default_pose,  # 12
         noisy_joint_vel,  # 12
         info["last_act"],  # 12
-        info["command"],  # 3
+        info["command"],  # 3->4
         jp.array([info["firearm_recoil_warning"]], dtype=jp.float32),
     ])
 

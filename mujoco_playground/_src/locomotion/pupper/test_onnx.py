@@ -47,12 +47,12 @@ def main():
 
     # --- 步驟 1: 配置 ---
     print("\n--- Step 1: Configuration ---")
-    env_name = 'PupperJoystickFlatTerrain'
+    env_name = 'PupperJoystickWithGun'
     # 自動查找最新的 checkpoint
     script_dir = epath.Path(__file__).parent
     checkpoint_dir = script_dir / f"checkpoints/{env_name}"
     steps = [int(p.name) for p in checkpoint_dir.iterdir() if p.is_dir() and p.name.isdigit()]
-    latest_step = 203161600 # max(steps) if steps else None
+    latest_step = 101580800 # max(steps) if steps else None
     if not latest_step:
         print(f"致命錯誤: 在 {checkpoint_dir} 中找不到任何 checkpoint。")
         return
@@ -62,7 +62,7 @@ def main():
     onnx_model_path = script_dir / f"onnx/pupper_ppo_policy_core_{step}.onnx"
     normalizer_path = script_dir / f"onnx/pupper_ppo_normalizer_{step}.npz"
     
-    POLICY_OBS_SIZE = 48
+    POLICY_OBS_SIZE = 51
     ACTION_SIZE = 12
     POLICY_HIDDEN_LAYER_SIZES = (512, 256, 128)
     

@@ -1,0 +1,2579 @@
+# 指定檔案彙整: C:\git_project\mujoco_playground_recoil
+# Git 當前分支: dev-v2.3.2
+================================================================================
+
+################################################################################
+# 包含的檔案清單
+################################################################################
+
+- mujoco_playground/_src/locomotion/pupper/joystick.py
+- mujoco_playground/_src/locomotion/pupper/joystickwithgun.py
+- mujoco_playground/_src/locomotion/pupper/pupper_locomotion_test.ipynb
+
+
+
+################################################################################
+# 各檔案內容
+################################################################################
+
+================================================================================
+--- START OF FILE: mujoco_playground/_src/locomotion/pupper/joystick.py ---
+---------------------------------------------------------------------------
+
+# Copyright 2025 DeepMind Technologies Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Joystick task for Pupper."""
+
+from typing import Any, Dict, Optional, Union
+
+import jax
+import jax.numpy as jp
+from ml_collections import config_dict
+from mujoco import mjx
+from mujoco.mjx._src import math
+import numpy as np
+
+from mujoco_playground._src import collision
+from mujoco_playground._src import mjx_env
+# Step 1: Import Pupper's base and constants
+from mujoco_playground._src.locomotion.pupper import base as pupper_base
+from mujoco_playground._src.locomotion.pupper import pupper_constants as consts
+
+
+def default_config() -> config_dict.ConfigDict:
+  """Gets the default configuration for the Pupper joystick task."""
+  config = config_dict.create(
+      ctrl_dt=0.02,
+      sim_dt=0.004,
+      episode_length=1000,
+
+      # cascade control
+      cascade_pos_kp = consts.CASCADE_POS_KP,
+      cascade_vel_kp = consts.CASCADE_VEL_KP_mA,
+      cascade_max_target_velocity_rad_s = consts.CASCADE_MAX_TARGET_VELOCITY_RAD_S,
+
+      action_repeat=1,
+      action_scale=0.5, #0.5
+      # === 【核心修改】增加歷史觀測步長 ===
+      # 目的：為Agent提供時間序列信息，使其能夠推斷動態，補償缺失的線速度觀測。
+      # 50Hz 控制頻率下，10-15 步是一個很好的起始點。
+      history_len=15,
+      # === 修改結束 ===
+      soft_joint_pos_limit_factor=0.95,
+      noise_config=config_dict.create(
+          level=1.0,
+          scales=config_dict.create(
+              joint_pos=0.03,
+              joint_vel=1.5,
+              gyro=0.2,
+              gravity=0.05,
+              linvel=0.1,
+              accelerometer=0.15,
+          ),
+      ),
+      reward_config=config_dict.create(
+          scales=config_dict.create(
+              tracking_lin_vel=2.5, # 1.0
+              tracking_ang_vel=1.5, # 0.5
+
+              # +++ 新增獎勵項: 俯仰角追蹤 +++
+              tracking_pitch=1.0,  # 推薦一個較高的權重，因為姿態控制很重要
+
+              lin_vel_z=-0.5,
+              ang_vel_xy=-0.05, # -0.05
+              orientation=-5.0, # -5.0
+              dof_pos_limits=-1.0,
+              pose=0.1,             # 0.5
+              termination=-1.0,
+              stand_still=-5.0,
+              torques=-0.0002, #-0.0002
+              action_rate=-0.01,
+              energy=-0.001,
+              feet_clearance=-2.0,
+              feet_height=-0.02,
+              feet_slip=-0.1,
+              feet_air_time=0.1,  #0.1
+          ),
+          tracking_sigma=0.25,
+          # Step 2: Adjust max_foot_height for the shorter Pupper
+          max_foot_height=0.06, # Go1 was 0.1, Pupper legs are shorter
+      ),
+      pert_config=config_dict.create(
+          enable=True,  # False
+          velocity_kick=[0.2, 0.5],
+          kick_durations=[0.05, 0.2],
+          kick_wait_times=[2.5, 5.0],
+      ),
+      command_config=config_dict.create(
+          a=[0.4, 0.6, 0.4, 0.0], # Reduced command range for smaller Pupper # a=[1.0, 0.5, 0.8]
+          b=[0.5, 0.9, 0.5, 0.5],# b=[0.9, 0.25, 0.5]
+      ),
+  )
+  return config
+
+
+# Step 3: Rename class and inherit from PupperEnv
+class Joystick(pupper_base.PupperEnv):
+  """Track a joystick command."""
+
+  def __init__(
+      self,
+      task: str = "flat_terrain",
+      config: config_dict.ConfigDict = default_config(),
+      config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
+  ):
+    super().__init__(
+        xml_path=consts.task_to_xml(task).as_posix(),
+        config=config,
+        config_overrides=config_overrides,
+    )
+    self._post_init()
+
+  def _post_init(self) -> None:
+    """Initializes task-specific parameters."""
+    self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
+    self._default_pose = jp.array(self._mj_model.keyframe("home").qpos[7:])
+
+    # This logic is general and works for Pupper
+    self._lowers, self._uppers = self.mj_model.jnt_range[1:].T
+    c = (self._lowers + self._uppers) / 2
+    r = self._uppers - self._lowers
+    self._soft_lowers = c - 0.5 * r * self._config.soft_joint_pos_limit_factor
+    self._soft_uppers = c + 0.5 * r * self._config.soft_joint_pos_limit_factor
+
+    # Use ROOT_BODY from constants file for robustness
+    self._torso_body_id = self._mj_model.body(consts.ROOT_BODY).id
+    self._torso_mass = self._mj_model.body_subtreemass[self._torso_body_id]
+
+    self._feet_site_id = np.array(
+        [self._mj_model.site(name).id for name in consts.FEET_SITES]
+    )
+    self._floor_geom_id = self._mj_model.geom("floor").id
+    self._feet_geom_id = np.array(
+        [self._mj_model.geom(name).id for name in consts.FEET_GEOMS]
+    )
+    
+    # This sensor address logic is general and correct
+    foot_linvel_sensor_adr = []
+    for site in consts.FEET_SITES:
+      sensor_id = self._mj_model.sensor(f"{site}_global_linvel").id
+      sensor_adr = self._mj_model.sensor_adr[sensor_id]
+      sensor_dim = self._mj_model.sensor_dim[sensor_id]
+      foot_linvel_sensor_adr.append(
+          list(range(sensor_adr, sensor_adr + sensor_dim))
+      )
+    self._foot_linvel_sensor_adr = jp.array(foot_linvel_sensor_adr)
+
+    self._cmd_a = jp.array(self._config.command_config.a)
+    self._cmd_b = jp.array(self._config.command_config.b)
+
+    # === 新增代碼: 從配置中讀取並保存級聯控制器增益 ===
+    self.pos_kp = self._config.cascade_pos_kp
+    self.vel_kp = self._config.cascade_vel_kp
+    self.max_target_vel = self._config.cascade_max_target_velocity_rad_s
+    # === 修改結束 ===
+
+  # `reset` and `step` methods are complex but highly general.
+  # The core logic of updating state, commands, and perturbations
+  # is independent of the robot's morphology, so we keep them.
+  
+  def reset(self, rng: jax.Array) -> mjx_env.State:
+    qpos = self._init_q
+    qvel = jp.zeros(self.mjx_model.nv)
+
+    # Initial randomization of position and orientation
+    rng, key = jax.random.split(rng)
+    dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
+    qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
+    rng, key = jax.random.split(rng)
+    yaw = jax.random.uniform(key, (1,), minval=-np.pi, maxval=np.pi)
+    quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
+    new_quat = math.quat_mul(qpos[3:7], quat)
+    qpos = qpos.at[3:7].set(new_quat)
+
+    # Initial randomization of velocity
+    rng, key = jax.random.split(rng)
+    qvel = qvel.at[0:6].set(
+        jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
+    )
+
+    data = mjx_env.init(self.mjx_model, qpos=qpos, qvel=qvel, ctrl=self._default_pose)
+
+    # Initialize perturbation and command scheduling
+    rng, key1, key2, key3 = jax.random.split(rng, 4)
+    time_until_next_pert = jax.random.uniform(key1, minval=self._config.pert_config.kick_wait_times[0], maxval=self._config.pert_config.kick_wait_times[1])
+    steps_until_next_pert = jp.round(time_until_next_pert / self.dt).astype(jp.int32)
+    pert_duration_seconds = jax.random.uniform(key2, minval=self._config.pert_config.kick_durations[0], maxval=self._config.pert_config.kick_durations[1])
+    pert_duration_steps = jp.round(pert_duration_seconds / self.dt).astype(jp.int32)
+    pert_mag = jax.random.uniform(key3, minval=self._config.pert_config.velocity_kick[0], maxval=self._config.pert_config.velocity_kick[1])
+
+    rng, key1, key2 = jax.random.split(rng, 3)
+    time_until_next_cmd = jax.random.exponential(key1) * 5.0
+    steps_until_next_cmd = jp.round(time_until_next_cmd / self.dt).astype(jp.int32)
+    cmd = jax.random.uniform(key2, shape=(4,), minval=-self._cmd_a, maxval=self._cmd_a)
+
+    info = {
+        "rng": rng,
+        "command": cmd,
+        "steps_until_next_cmd": steps_until_next_cmd,
+        "last_act": jp.zeros(self.mjx_model.nu),
+        "last_last_act": jp.zeros(self.mjx_model.nu),
+        "feet_air_time": jp.zeros(4),
+        "last_contact": jp.zeros(4, dtype=bool),
+        "swing_peak": jp.zeros(4),
+        "steps_until_next_pert": steps_until_next_pert,
+        "pert_duration_seconds": pert_duration_seconds,
+        "pert_duration": pert_duration_steps,
+        "steps_since_last_pert": 0,
+        "pert_steps": 0,
+        "pert_dir": jp.zeros(3),
+        "pert_mag": pert_mag,
+    }
+
+    metrics = {}
+    for k in self._config.reward_config.scales.keys():
+      metrics[f"reward/{k}"] = jp.zeros(())
+    metrics["swing_peak"] = jp.zeros(())
+
+    obs = self._get_obs(data, info)
+    reward, done = jp.zeros(2)
+    return mjx_env.State(data, obs, reward, done, metrics, info)
+
+  def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+    if self._config.pert_config.enable:
+      state = self._maybe_apply_perturbation(state)
+    
+    # 1. 得到 RL 策略輸出的目標角度 (邏輯不變)
+    target_q = self._default_pose + action * self._config.action_scale
+
+    # 2. 計算關節端的最大力矩
+    # 計算對應的最大電流 (A)，用於飽和
+    MAX_MOTOR_CURRENT_mA = consts.MAX_MOTOR_TORQUE * consts.TORQUE_CONSTANT # 約 1.0 * 3000 = 3000 mA
+
+    # 3. 在循環中執行級聯控制和模擬步驟
+    def cascade_control_step(i, data):
+        # =================================================================
+        # 【確認】這兩行是絕對必要的，且必須在此位置
+        # =================================================================
+        # 讀取當前所有關節的角度 (qpos)
+        current_q = data.qpos[7:]
+        # 讀取當前所有關節的角速度 (qvel)
+        current_v = data.qvel[6:]
+        # =================================================================
+        pos_error = target_q - current_q
+        target_v = self.pos_kp * pos_error
+        target_v = jp.clip(target_v, -self.max_target_vel, self.max_target_vel)
+
+        # --- 內環: 速度控制器 (P-Controller) ---
+        vel_error = target_v - current_v
+        # 計算目標電流，因為 self.vel_kp (來自 CASCADE_VEL_KP_mA) 很大，
+        # 所以 target_current 的單位直接就是毫安 (mA)
+        target_current_mA = self.vel_kp * vel_error
+
+        # --- 電流飽和 (以 mA 為單位) ---
+        # 直接使用我們在 constants 中定義的毫安極限值
+        final_ctrl = jp.clip(target_current_mA, 
+                             -MAX_MOTOR_CURRENT_mA, 
+                             MAX_MOTOR_CURRENT_mA)
+        
+        # === 邏輯結束，現在單位完全匹配 ===
+        # final_ctrl 的單位是 mA。
+        # XML 的 ctrlrange 也是 mA。
+        # XML 的 gainprm 也是 N·m/mA。
+        # 所以可以直接傳遞，不再需要任何單位轉換。
+        # final_ctrl = final_ctrl/1000  # 從xml處理
+
+        # 應用控制信號並執行一步模擬
+        data = data.replace(ctrl=final_ctrl)
+        data = mjx.step(self.mjx_model, data)
+        return data
+
+    # 執行 n_substeps 次高頻控制
+    data = jax.lax.fori_loop(0, self.n_substeps, cascade_control_step, state.data)
+
+
+    # Contact detection and foot state tracking
+    contact = jp.array([
+        collision.geoms_colliding(data, geom_id, self._floor_geom_id)
+        for geom_id in self._feet_geom_id
+    ])
+    contact_filt = contact | state.info["last_contact"]
+    first_contact = (state.info["feet_air_time"] > 0.0) * contact_filt
+    state.info["feet_air_time"] += self.dt
+    p_f = data.site_xpos[self._feet_site_id]
+    p_fz = p_f[..., -1]
+    state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
+
+    obs = self._get_obs(data, state.info)
+    done = self._get_termination(data)
+
+    rewards = self._get_reward(data, action, state.info, state.metrics, done, first_contact, contact)
+    rewards = {k: v * self._config.reward_config.scales[k] for k, v in rewards.items()}
+    reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+    
+    # Bookkeeping for next step
+    info = state.info
+    info["last_last_act"] = info["last_act"]
+    info["last_act"] = action
+    info["steps_until_next_cmd"] -= 1
+    info["rng"], key1, key2 = jax.random.split(info["rng"], 3)
+    info["command"] = jp.where(
+        info["steps_until_next_cmd"] <= 0,
+        self.sample_command(key1, info["command"]),
+        info["command"],
+    )
+    info["steps_until_next_cmd"] = jp.where(
+        done | (info["steps_until_next_cmd"] <= 0),
+        jp.round(jax.random.exponential(key2) * 5.0 / self.dt).astype(jp.int32),
+        info["steps_until_next_cmd"],
+    )
+    info["feet_air_time"] *= ~contact
+    info["last_contact"] = contact
+    info["swing_peak"] *= ~contact
+    
+    metrics = state.metrics
+    for k, v in rewards.items():
+      metrics[f"reward/{k}"] = v
+    metrics["swing_peak"] = jp.mean(info["swing_peak"])
+
+    done = done.astype(reward.dtype)
+    return state.replace(data=data, obs=obs, reward=reward, done=done, info=info, metrics=metrics)
+  
+  # _get_termination, _get_obs, and reward functions are mostly general.
+  # The logic depends on physical quantities that are correctly calculated
+  # for Pupper due to our consistent XML and constants.
+  
+  def _get_termination(self, data: mjx.Data) -> jax.Array:
+    # Terminate if the robot falls over (torso's z-axis points down)
+    return self.get_upvector(data)[-1] < 0.0
+
+  def _get_obs(self, data: mjx.Data, info: dict[str, Any]) -> Dict[str, jax.Array]:
+    # Observation construction is general and well-designed. No changes needed.
+    gyro = self.get_gyro(data)
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_gyro = (gyro + (2*jax.random.uniform(noise_rng, shape=gyro.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.gyro)
+    gravity = self.get_gravity(data)
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_gravity = (gravity + (2*jax.random.uniform(noise_rng, shape=gravity.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.gravity)
+    joint_angles = data.qpos[7:]
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_joint_angles = (joint_angles + (2*jax.random.uniform(noise_rng, shape=joint_angles.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.joint_pos)
+    joint_vel = data.qvel[6:]
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_joint_vel = (joint_vel + (2*jax.random.uniform(noise_rng, shape=joint_vel.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.joint_vel)
+    
+    linvel = self.get_local_linvel(data)
+    accelerometer = self.get_accelerometer(data)
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_accelerometer = (accelerometer + (2*jax.random.uniform(noise_rng, shape=accelerometer.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.accelerometer)
+    #noisy_linvel = (linvel + (2*jax.random.uniform(noise_rng, shape=linvel.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.linvel)
+    current_pitch = self.get_pitch(data)
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_current_pitch = (current_pitch + (2*jax.random.uniform(noise_rng, shape=current_pitch.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.linvel)
+
+
+    state_obs = jp.hstack([
+        #noisy_linvel,
+        noisy_gyro,
+        noisy_gravity,
+        noisy_accelerometer,
+        noisy_current_pitch,
+        noisy_joint_angles - self._default_pose,
+        noisy_joint_vel,
+        info["last_act"],
+        info["command"],
+    ])
+
+    #accelerometer = self.get_accelerometer(data) # 移到前面了
+    angvel = self.get_global_angvel(data)
+    feet_vel = data.sensordata[self._foot_linvel_sensor_adr].ravel()
+
+    privileged_state = jp.hstack([
+        state_obs,
+        gyro, accelerometer, gravity, current_pitch, linvel, angvel,
+        joint_angles - self._default_pose,
+        joint_vel,
+        data.actuator_force,
+        info["last_contact"],
+        feet_vel,
+        info["feet_air_time"],
+        data.xfrc_applied[self._torso_body_id, :3],
+        info["steps_since_last_pert"] >= info["steps_until_next_pert"],
+    ])
+
+    return {"state": state_obs, "privileged_state": privileged_state}
+    
+  # The individual reward functions are all kept, as their logic is sound
+  # and general. The only change was `max_foot_height` in the config.
+
+  def _get_reward(self, data: mjx.Data, action: jax.Array, info: dict[str, Any], metrics: dict[str, Any], done: jax.Array, first_contact: jax.Array, contact: jax.Array) -> dict[str, jax.Array]:
+    del metrics
+    return {
+        "tracking_lin_vel": self._reward_tracking_lin_vel(info["command"], self.get_local_linvel(data)),
+        "tracking_ang_vel": self._reward_tracking_ang_vel(info["command"], self.get_gyro(data)),
+        # +++ 新增獎勵項 +++
+        "tracking_pitch": self._reward_tracking_pitch(info["command"], self.get_pitch(data)),
+
+        "lin_vel_z": self._cost_lin_vel_z(self.get_global_linvel(data)),
+        "ang_vel_xy": self._cost_ang_vel_xy(self.get_global_angvel(data)),
+        "orientation": self._cost_orientation(self.get_upvector(data)),
+        "stand_still": self._cost_stand_still(info["command"], data.qpos[7:]),
+        "termination": self._cost_termination(done),
+        "pose": self._reward_pose(data.qpos[7:]),
+        "torques": self._cost_torques(data.actuator_force),
+        "action_rate": self._cost_action_rate(action, info["last_act"], info["last_last_act"]),
+        "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
+        "feet_slip": self._cost_feet_slip(data, contact, info),
+        "feet_clearance": self._cost_feet_clearance(data),
+        "feet_height": self._cost_feet_height(info["swing_peak"], first_contact, info),
+        "feet_air_time": self._reward_feet_air_time(info["feet_air_time"], first_contact, info["command"]),
+        "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
+    }
+
+  def _reward_tracking_lin_vel(self, commands: jax.Array, local_vel: jax.Array) -> jax.Array:
+    lin_vel_error = jp.sum(jp.square(commands[:2] - local_vel[:2]))
+    return jp.exp(-lin_vel_error / self._config.reward_config.tracking_sigma)
+
+  def _reward_tracking_ang_vel(self, commands: jax.Array, ang_vel: jax.Array) -> jax.Array:
+    ang_vel_error = jp.square(commands[2] - ang_vel[2])
+    return jp.exp(-ang_vel_error / self._config.reward_config.tracking_sigma)
+  
+  def _reward_tracking_pitch(self, command: jax.Array, current_pitch: jax.Array) -> jax.Array:
+    pitch_error = jp.square(command[3] - current_pitch)
+    return jp.exp(-pitch_error / self._config.reward_config.tracking_sigma)
+
+
+  def _cost_lin_vel_z(self, global_linvel) -> jax.Array:
+    return jp.square(global_linvel[2])
+
+  def _cost_ang_vel_xy(self, global_angvel) -> jax.Array:
+    return jp.sum(jp.square(global_angvel[:2]))
+
+  def _cost_orientation(self, torso_zaxis: jax.Array) -> jax.Array:
+    # Penalize non flat base orientation by penalizing the xy components of the up-vector
+    return jp.sum(jp.square(torso_zaxis[:2]))
+
+  def _cost_torques(self, torques: jax.Array) -> jax.Array:
+    return jp.sqrt(jp.sum(jp.square(torques))) + jp.sum(jp.abs(torques))
+
+  def _cost_energy(self, qvel: jax.Array, qfrc_actuator: jax.Array) -> jax.Array:
+    return jp.sum(jp.abs(qvel) * jp.abs(qfrc_actuator))
+
+  def _cost_action_rate(self, act: jax.Array, last_act: jax.Array, last_last_act: jax.Array) -> jax.Array:
+    del last_last_act
+    return jp.sum(jp.square(act - last_act))
+
+  def _reward_pose(self, qpos: jax.Array) -> jax.Array:
+    weight = jp.array([1.0, 1.0, 0.1] * 4) # Penalize abduction and hip more than knee
+    return jp.exp(-jp.sum(jp.square(qpos - self._default_pose) * weight))
+
+  def _cost_stand_still(self, commands: jax.Array, qpos: jax.Array) -> jax.Array:
+    cmd_norm = jp.linalg.norm(commands)
+    # Penalize pose deviation only when command is near zero
+    return jp.sum(jp.abs(qpos - self._default_pose)) * (cmd_norm < 0.1)
+
+  def _cost_termination(self, done: jax.Array) -> jax.Array:
+    return done
+
+  def _cost_joint_pos_limits(self, qpos: jax.Array) -> jax.Array:
+    out_of_limits = -jp.clip(qpos - self._soft_lowers, None, 0.0)
+    out_of_limits += jp.clip(qpos - self._soft_uppers, 0.0, None)
+    return jp.sum(out_of_limits)
+
+  def _cost_feet_slip(self, data: mjx.Data, contact: jax.Array, info: dict[str, Any]) -> jax.Array:
+    cmd_norm = jp.linalg.norm(info["command"])
+    feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
+    vel_xy = feet_vel[..., :2]
+    vel_xy_norm_sq = jp.sum(jp.square(vel_xy), axis=-1)
+    return jp.sum(vel_xy_norm_sq * contact) * (cmd_norm > 0.1)
+
+  def _cost_feet_clearance(self, data: mjx.Data) -> jax.Array:
+    feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
+    vel_xy = feet_vel[..., :2]
+    vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
+    foot_pos = data.site_xpos[self._feet_site_id]
+    foot_z = foot_pos[..., -1]
+    # Penalize feet getting too high during swing
+    delta = jp.maximum(foot_z - self._config.reward_config.max_foot_height, 0.0)
+    return jp.sum(delta * vel_norm)
+
+  def _cost_feet_height(self, swing_peak: jax.Array, first_contact: jax.Array, info: dict[str, Any]) -> jax.Array:
+    cmd_norm = jp.linalg.norm(info["command"])
+    # Penalize if the foot didn't reach a minimum height during swing
+    error = swing_peak - 0.02 # e.g., require at least 2cm clearance
+    return jp.sum(jp.maximum(-error, 0) * first_contact) * (cmd_norm > 0.1)
+
+  def _reward_feet_air_time(self, air_time: jax.Array, first_contact: jax.Array, commands: jax.Array) -> jax.Array:
+    cmd_norm = jp.linalg.norm(commands)
+    # Reward air time around a target duration (e.g., 0.6s)
+    rew_air_time = jp.sum(jp.exp(-100 * jp.square(air_time - 0.6)) * first_contact)
+    rew_air_time *= (cmd_norm > 0.1)
+    return rew_air_time
+
+  def _maybe_apply_perturbation(self, state: mjx_env.State) -> mjx_env.State:
+    # This function is general and does not need modification
+    def gen_dir(rng: jax.Array) -> jax.Array:
+      angle = jax.random.uniform(rng, minval=0.0, maxval=2 * jp.pi)
+      return jp.array([jp.cos(angle), jp.sin(angle), 0.0])
+    def apply_pert(state: mjx_env.State) -> mjx_env.State:
+      t = state.info["pert_steps"] * self.dt
+      u_t = 0.5 * jp.sin(jp.pi * t / state.info["pert_duration_seconds"])
+      force = (u_t * self._torso_mass * state.info["pert_mag"] / state.info["pert_duration_seconds"])
+      xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+      xfrc_applied = xfrc_applied.at[self._torso_body_id, :3].set(force * state.info["pert_dir"])
+      data = state.data.replace(xfrc_applied=xfrc_applied)
+      info = state.info
+      info["steps_since_last_pert"] = jp.where(info["pert_steps"] >= info["pert_duration"], 0, info["steps_since_last_pert"])
+      info["pert_steps"] += 1
+      return state.replace(data=data, info=info)
+    def wait(state: mjx_env.State) -> mjx_env.State:
+      info = state.info
+      info["rng"], rng = jax.random.split(info["rng"])
+      info["steps_since_last_pert"] += 1
+      xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+      data = state.data.replace(xfrc_applied=xfrc_applied)
+      info["pert_steps"] = jp.where(info["steps_since_last_pert"] >= info["steps_until_next_pert"], 0, info["pert_steps"])
+      info["pert_dir"] = jp.where(info["steps_since_last_pert"] >= info["steps_until_next_pert"], gen_dir(rng), info["pert_dir"])
+      return state.replace(data=data, info=info)
+    return jax.lax.cond(state.info["steps_since_last_pert"] >= state.info["steps_until_next_pert"], apply_pert, wait, state)
+
+  def sample_command(self, rng: jax.Array, x_k: jax.Array) -> jax.Array:
+    # This function is general and does not need modification
+    rng, y_rng, w_rng, z_rng = jax.random.split(rng, 4)
+    y_k = jax.random.uniform(y_rng, shape=(4,), minval=-self._cmd_a, maxval=self._cmd_a)
+    z_k = jax.random.bernoulli(z_rng, self._cmd_b, shape=(4,))
+    w_k = jax.random.bernoulli(w_rng, 0.5, shape=(4,))
+    return x_k - w_k * (x_k - y_k * z_k)
+
+---------------------------------------------------------------------------
+---  END OF FILE: mujoco_playground/_src/locomotion/pupper/joystick.py  ---
+================================================================================
+
+================================================================================
+--- START OF FILE: mujoco_playground/_src/locomotion/pupper/joystickwithgun.py ---
+----------------------------------------------------------------------------------
+
+# Copyright 2025 DeepMind Technologies Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Joystick task for Go1."""
+
+from typing import Any, Dict, Optional, Union
+
+import jax
+import jax.numpy as jp
+from ml_collections import config_dict
+from mujoco import mjx
+from mujoco.mjx._src import math
+import numpy as np
+
+from mujoco_playground._src import collision
+from mujoco_playground._src import mjx_env
+
+from mujoco_playground._src.locomotion.pupper import base as pupper_base
+from mujoco_playground._src.locomotion.pupper import pupper_constants as consts
+
+
+def default_config() -> config_dict.ConfigDict:
+  return config_dict.create(
+      ctrl_dt=0.02,
+      sim_dt=0.004,
+      episode_length=1000,
+
+      #Kp=35.0,
+      #Kd=0.5,
+      # cascade control
+      cascade_pos_kp = consts.CASCADE_POS_KP,
+      cascade_vel_kp = consts.CASCADE_VEL_KP_mA,
+      cascade_max_target_velocity_rad_s = consts.CASCADE_MAX_TARGET_VELOCITY_RAD_S,
+
+      action_repeat=1,
+      action_scale=0.5,
+      history_len=1,
+      soft_joint_pos_limit_factor=0.95,
+      noise_config=config_dict.create(
+          level=1.0,  # Set to 0.0 to disable noise.
+          scales=config_dict.create(
+              joint_pos=0.03,
+              joint_vel=1.5,
+              gyro=0.2,
+              gravity=0.05,
+              linvel=0.1,
+              accelerometer=0.15,
+          ),
+      ),
+      reward_config=config_dict.create(
+          scales=config_dict.create(
+              # Tracking.
+              tracking_lin_vel=3.5, #default: 1.0,
+              tracking_ang_vel=0.5, #default: 0.5,
+              tracking_pitch=1.5, #default: 1.5,
+              # Base reward.
+              lin_vel_z=-0.5, #default: -0.5,
+              ang_vel_xy=-0.10, #default: -0.05,
+              orientation=-5.0, #default: -5.0,
+              # Other.
+              dof_pos_limits=-1.0, #default: -1.0,
+              pose=0.5, #default: 0.5,
+              # Other.
+              termination=-1.0, #default: -1.0,
+              stand_still=-1.0, #default: -1.0,
+              # Regularization.
+              torques=-0.0002,  #default: -0.0002,
+              action_rate=-0.01, #default: -0.01,
+              energy=-0.001, #default: -0.001,
+              # Feet.
+              feet_clearance=-2.0, #default: -2.0,
+              feet_height=-0.2, #default: -0.2,
+              feet_slip=-0.1, #default: -0.1,
+              feet_air_time=0.2, #default: 0.2
+          ),
+          tracking_sigma=0.25, # default: 0.25
+          max_foot_height=0.1, # default: 0.1
+      ),
+      pert_config=config_dict.create(
+          enable=False,
+          velocity_kick=[0.0, 3.0],
+          kick_durations=[0.05, 0.2],
+          kick_wait_times=[1.0, 3.0],
+      ),
+      command_config=config_dict.create(
+          # Uniform distribution for command amplitude.
+          a=[0.0, 0.0, 0.0, 0.5], #Vx,Vy,Omega
+          # Probability of not zeroing out new command.
+          b=[0.9, 0.25, 0.5, 0.7],
+      ),
+      
+      
+      firearm_recoil=config_dict.create(
+          enable=True,
+          interval_range=[50, 200],  # Randomized interval between 80 and 150 steps.
+          warning_duration=3,
+          duration=0.2,  # default: 0.2
+          direction=[0.0, 1.0, 0.0],  # +Y in local frame
+          force_scale_range=[4.1, 4.3]  # randomization range for velocity equivalent
+      ),
+  )
+
+
+class JoystickWithGun(pupper_base.PupperEnv):
+  """Track a joystick command."""
+
+  def __init__(
+      self,
+      task: str = "flat_terrain",
+      config: config_dict.ConfigDict = default_config(),
+      config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
+  ):
+    super().__init__(
+        xml_path=consts.task_to_xml(task).as_posix(),
+        config=config,
+        config_overrides=config_overrides,
+    )
+    self._post_init()
+    self._torso_qpos_slice = slice(3, 7)
+    #assert len(config.command_config.a) == 4
+    #assert len(config.command_config.b) == 4
+    #print("command_config.a =", self._config.command_config.a)
+
+  def _post_init(self) -> None:
+    self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
+    self._default_pose = jp.array(self._mj_model.keyframe("home").qpos[7:])
+
+    # Note: First joint is freejoint.
+    self._lowers, self._uppers = self.mj_model.jnt_range[1:].T
+    self._soft_lowers = self._lowers * self._config.soft_joint_pos_limit_factor
+    self._soft_uppers = self._uppers * self._config.soft_joint_pos_limit_factor
+
+    self._torso_body_id = self._mj_model.body(consts.ROOT_BODY).id
+    self._torso_mass = self._mj_model.body_subtreemass[self._torso_body_id]
+
+    self._feet_site_id = np.array(
+        [self._mj_model.site(name).id for name in consts.FEET_SITES]
+    )
+    self._floor_geom_id = self._mj_model.geom("floor").id
+    self._feet_geom_id = np.array(
+        [self._mj_model.geom(name).id for name in consts.FEET_GEOMS]
+    )
+
+    foot_linvel_sensor_adr = []
+    for site in consts.FEET_SITES:
+      sensor_id = self._mj_model.sensor(f"{site}_global_linvel").id
+      sensor_adr = self._mj_model.sensor_adr[sensor_id]
+      sensor_dim = self._mj_model.sensor_dim[sensor_id]
+      foot_linvel_sensor_adr.append(
+          list(range(sensor_adr, sensor_adr + sensor_dim))
+      )
+    self._foot_linvel_sensor_adr = jp.array(foot_linvel_sensor_adr)
+
+    self._cmd_a = jp.array(self._config.command_config.a)
+    self._cmd_b = jp.array(self._config.command_config.b)
+
+    # === 新增代碼: 從配置中讀取並保存級聯控制器增益 ===
+    self.pos_kp = self._config.cascade_pos_kp
+    self.vel_kp = self._config.cascade_vel_kp
+    self.max_target_vel = self._config.cascade_max_target_velocity_rad_s
+    # === 修改結束 ===
+
+  def reset(self, rng: jax.Array) -> mjx_env.State:
+    qpos = self._init_q
+    qvel = jp.zeros(self.mjx_model.nv)
+
+    # x=+U(-0.5, 0.5), y=+U(-0.5, 0.5), yaw=U(-3.14, 3.14).
+    rng, key = jax.random.split(rng)
+    dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
+    qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
+    rng, key = jax.random.split(rng)
+    yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
+    quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
+    new_quat = math.quat_mul(qpos[3:7], quat)
+    qpos = qpos.at[3:7].set(new_quat)
+
+    # d(xyzrpy)=U(-0.5, 0.5)
+    rng, key = jax.random.split(rng)
+    qvel = qvel.at[0:6].set(
+        jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
+    )
+
+    data = mjx_env.init(self.mjx_model, qpos=qpos, qvel=qvel, ctrl=qpos[7:])
+
+    rng, key1, key2, key3 = jax.random.split(rng, 4)
+    time_until_next_pert = jax.random.uniform(
+        key1,
+        minval=self._config.pert_config.kick_wait_times[0],
+        maxval=self._config.pert_config.kick_wait_times[1],
+    )
+    steps_until_next_pert = jp.round(time_until_next_pert / self.dt).astype(
+        jp.int32
+    )
+    pert_duration_seconds = jax.random.uniform(
+        key2,
+        minval=self._config.pert_config.kick_durations[0],
+        maxval=self._config.pert_config.kick_durations[1],
+    )
+    pert_duration_steps = jp.round(pert_duration_seconds / self.dt).astype(
+        jp.int32
+    )
+    pert_mag = jax.random.uniform(
+        key3,
+        minval=self._config.pert_config.velocity_kick[0],
+        maxval=self._config.pert_config.velocity_kick[1],
+    )
+
+    rng, key1, key2 = jax.random.split(rng, 3)
+    time_until_next_cmd = jax.random.exponential(key1) * 5.0
+    steps_until_next_cmd = jp.round(time_until_next_cmd / self.dt).astype(
+        jp.int32
+    )
+    #print(self._cmd_a)  # Debugging line to check command shape
+    a = jp.array(self._config.command_config.a, dtype=jp.float32)
+    if a.shape != (4,):
+        raise ValueError(f"`command_config.a` must be shape (4,), but got {a.shape}")
+    cmd = jax.random.uniform(key, shape=(4,)) * 2 * a - a  # Sample from [-a, a]
+
+    rng, key1, key2, rng = jax.random.split(rng, 4)
+    firearm_recoil_next_interval = jax.random.randint(key1, (), minval=80, maxval=150)
+    firearm_recoil_force = (
+    jax.random.uniform(key2, shape=(3,), minval=0.3, maxval=0.6)
+    * jp.array([0.0, 1.0, 0.0])  # Only +y direction
+    )
+
+    info = {
+        "rng": rng,
+        "command": cmd,
+        "steps_until_next_cmd": steps_until_next_cmd,
+        "last_act": jp.zeros(self.mjx_model.nu),
+        "last_last_act": jp.zeros(self.mjx_model.nu),
+        "feet_air_time": jp.zeros(4),
+        "last_contact": jp.zeros(4, dtype=bool),
+        "swing_peak": jp.zeros(4),
+        "steps_until_next_pert": steps_until_next_pert,
+        "pert_duration_seconds": pert_duration_seconds,
+        "pert_duration": pert_duration_steps,
+        "steps_since_last_pert": 0,
+        "pert_steps": 0,
+        "pert_dir": jp.zeros(3),
+        "pert_mag": pert_mag,
+        
+        "firearm_recoil_timer": 0,
+        "firearm_recoil_steps": 0,
+        "firearm_recoil_interval": jax.random.randint(
+            rng,
+            (),
+            minval=self._config.firearm_recoil.interval_range[0],
+            maxval=self._config.firearm_recoil.interval_range[1] + 1,
+        ),
+        "firearm_recoil_warning": False,
+        "firearm_recoil_next_interval": firearm_recoil_next_interval,
+        "firearm_recoil_force": firearm_recoil_force,
+    }
+
+    metrics = {}
+    for k in self._config.reward_config.scales.keys():
+      metrics[f"reward/{k}"] = jp.zeros(())
+    metrics["swing_peak"] = jp.zeros(())
+
+    obs = self._get_obs(data, info)
+    reward, done = jp.zeros(2)
+    return mjx_env.State(data, obs, reward, done, metrics, info)
+
+  # def _reset_if_outside_bounds(self, state: mjx_env.State) -> mjx_env.State:
+  #   qpos = state.data.qpos
+  #   new_x = jp.where(jp.abs(qpos[0]) > 9.5, 0.0, qpos[0])
+  #   new_y = jp.where(jp.abs(qpos[1]) > 9.5, 0.0, qpos[1])
+  #   qpos = qpos.at[0:2].set(jp.array([new_x, new_y]))
+  #   state = state.replace(data=state.data.replace(qpos=qpos))
+  #   return state
+
+  def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+    if self._config.pert_config.enable:
+        state = self._maybe_apply_perturbation(state)
+
+    # === Recoil RNG and logic ===
+    cfg = self._config.firearm_recoil
+    rng = state.info["rng"]
+    steps = state.info["firearm_recoil_steps"]
+    interval = state.info["firearm_recoil_interval"]
+
+    apply_recoil = (steps == interval)
+    time_to_fire = (interval - steps) <= cfg.warning_duration
+    state.info["firearm_recoil_warning"] = time_to_fire
+
+    rng, rng_force, rng_interval = jax.random.split(rng, 3)
+    force_scale = jax.random.uniform(rng_force, minval=cfg.force_scale_range[0], maxval=cfg.force_scale_range[1])
+    new_interval = jax.random.randint(rng_interval, shape=(), minval=cfg.interval_range[0], maxval=cfg.interval_range[1] + 1)
+
+    def apply_recoil_force(data):
+        local_direction = jp.array(cfg.direction)
+        torso_quat = data.qpos[self._torso_qpos_slice]
+        world_direction = math.rotate(local_direction, torso_quat)
+        force = self._torso_mass * force_scale * world_direction / cfg.duration
+        xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+        xfrc_applied = xfrc_applied.at[self._torso_body_id, :3].set(force)
+        return data.replace(xfrc_applied=xfrc_applied)
+
+    def no_force(data):
+        xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+        return data.replace(xfrc_applied=xfrc_applied)
+
+    state_data = jax.lax.cond(cfg.enable & apply_recoil, apply_recoil_force, no_force, state.data)
+
+    state.info["firearm_recoil_steps"] = jp.where(cfg.enable & apply_recoil, 1, steps + 1)
+    state.info["firearm_recoil_interval"] = jp.where(cfg.enable & apply_recoil, new_interval, interval)
+
+    # Save RNG for later use
+    state.info["rng"] = rng
+
+    # === Cascade Control ===
+    target_q = self._default_pose + action * self._config.action_scale
+    MAX_MOTOR_CURRENT_mA = consts.MAX_MOTOR_TORQUE * consts.TORQUE_CONSTANT
+
+    def cascade_control_step(i, data):
+        current_q = data.qpos[7:]
+        current_v = data.qvel[6:]
+        pos_error = target_q - current_q
+        target_v = self.pos_kp * pos_error
+        target_v = jp.clip(target_v, -self.max_target_vel, self.max_target_vel)
+        vel_error = target_v - current_v
+        target_current_mA = self.vel_kp * vel_error
+        final_ctrl = jp.clip(target_current_mA, -MAX_MOTOR_CURRENT_mA, MAX_MOTOR_CURRENT_mA)
+        data = data.replace(ctrl=final_ctrl)
+        data = mjx.step(self.mjx_model, data)
+        return data
+
+    data = jax.lax.fori_loop(0, self.n_substeps, cascade_control_step, state_data)
+
+    # === Contact + reward tracking ===
+    contact = jp.array([
+        collision.geoms_colliding(data, geom_id, self._floor_geom_id)
+        for geom_id in self._feet_geom_id
+    ])
+    contact_filt = contact | state.info["last_contact"]
+    first_contact = (state.info["feet_air_time"] > 0.0) * contact_filt
+    state.info["feet_air_time"] += self.dt
+    p_fz = data.site_xpos[self._feet_site_id][..., -1]
+    state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
+
+    obs = self._get_obs(data, state.info)
+    done = self._get_termination(data)
+
+    rewards = self._get_reward(data, action, state.info, state.metrics, done, first_contact, contact)
+    rewards = {k: v * self._config.reward_config.scales[k] for k, v in rewards.items()}
+    reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+
+    # === Bookkeeping ===
+    info = state.info
+    info["last_last_act"] = info["last_act"]
+    info["last_act"] = action
+    info["steps_until_next_cmd"] -= 1
+
+    rng, key1, key2 = jax.random.split(info["rng"], 3)
+    info["command"] = jp.where(
+        info["steps_until_next_cmd"] <= 0,
+        self.sample_command(key1, info["command"]),
+        info["command"],
+    )
+    info["steps_until_next_cmd"] = jp.where(
+        done | (info["steps_until_next_cmd"] <= 0),
+        jp.round(jax.random.exponential(key2) * 5.0 / self.dt).astype(jp.int32),
+        info["steps_until_next_cmd"],
+    )
+    info["rng"] = rng
+
+    info["feet_air_time"] *= ~contact
+    info["last_contact"] = contact
+    info["swing_peak"] *= ~contact
+
+    metrics = state.metrics
+    for k, v in rewards.items():
+        metrics[f"reward/{k}"] = v
+    metrics["swing_peak"] = jp.mean(info["swing_peak"])
+
+    done = done.astype(reward.dtype)
+    return state.replace(data=data, obs=obs, reward=reward, done=done, info=info, metrics=metrics)
+
+
+  def _get_termination(self, data: mjx.Data) -> jax.Array:
+    fall_termination = self.get_upvector(data)[-1] < 0.0
+    return fall_termination
+
+  def _get_obs(
+      self, data: mjx.Data, info: dict[str, Any]
+  ) -> Dict[str, jax.Array]:
+    gyro = self.get_gyro(data)
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_gyro = (
+        gyro
+        + (2 * jax.random.uniform(noise_rng, shape=gyro.shape) - 1)
+        * self._config.noise_config.level
+        * self._config.noise_config.scales.gyro
+    )
+
+    gravity = self.get_gravity(data)
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_gravity = (
+        gravity
+        + (2 * jax.random.uniform(noise_rng, shape=gravity.shape) - 1)
+        * self._config.noise_config.level
+        * self._config.noise_config.scales.gravity
+    )
+
+    joint_angles = data.qpos[7:]
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_joint_angles = (
+        joint_angles
+        + (2 * jax.random.uniform(noise_rng, shape=joint_angles.shape) - 1)
+        * self._config.noise_config.level
+        * self._config.noise_config.scales.joint_pos
+    )
+
+    joint_vel = data.qvel[6:]
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_joint_vel = (
+        joint_vel
+        + (2 * jax.random.uniform(noise_rng, shape=joint_vel.shape) - 1)
+        * self._config.noise_config.level
+        * self._config.noise_config.scales.joint_vel
+    )
+
+    linvel = self.get_local_linvel(data)
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_linvel = (
+        linvel
+        + (2 * jax.random.uniform(noise_rng, shape=linvel.shape) - 1)
+        * self._config.noise_config.level
+        * self._config.noise_config.scales.linvel
+    )
+
+    accelerometer = self.get_accelerometer(data)
+    noisy_accelerometer = (accelerometer + (2*jax.random.uniform(noise_rng, shape=accelerometer.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.accelerometer)
+
+    current_pitch = self.get_pitch(data)
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_current_pitch = (current_pitch + (2*jax.random.uniform(noise_rng, shape=current_pitch.shape)-1) * self._config.noise_config.level * self._config.noise_config.scales.linvel)
+
+
+    state = jp.hstack([
+        noisy_gyro,  # 3
+        noisy_gravity,  # 3
+        noisy_accelerometer,  # 3
+        noisy_current_pitch,  # 1
+        noisy_joint_angles - self._default_pose,  # 12
+        noisy_joint_vel,  # 12
+        info["last_act"],  # 12
+        info["command"],  # 3->4
+        jp.array([info["firearm_recoil_warning"]], dtype=jp.float32),
+    ])
+
+    #accelerometer = self.get_accelerometer(data)
+    angvel = self.get_global_angvel(data)
+    feet_vel = data.sensordata[self._foot_linvel_sensor_adr].ravel()
+
+    privileged_state = jp.hstack([
+        state,
+        gyro,  # 3
+        accelerometer,  # 3
+        gravity,  # 3
+        linvel,  # 3
+        angvel,  # 3
+        joint_angles - self._default_pose,  # 12
+        joint_vel,  # 12
+        data.actuator_force,  # 12
+        info["last_contact"],  # 4
+        feet_vel,  # 4*3
+        info["feet_air_time"],  # 4
+        data.xfrc_applied[self._torso_body_id, :3],  # 3
+        info["steps_since_last_pert"] >= info["steps_until_next_pert"],  # 1
+    ])
+
+    return {
+        "state": state,
+        "privileged_state": privileged_state,
+    }
+
+  def _get_reward(
+      self,
+      data: mjx.Data,
+      action: jax.Array,
+      info: dict[str, Any],
+      metrics: dict[str, Any],
+      done: jax.Array,
+      first_contact: jax.Array,
+      contact: jax.Array,
+  ) -> dict[str, jax.Array]:
+    del metrics  # Unused.
+    return {
+        "tracking_lin_vel": self._reward_tracking_lin_vel(
+            info["command"], self.get_local_linvel(data)
+        ),
+        "tracking_ang_vel": self._reward_tracking_ang_vel(
+            info["command"], self.get_gyro(data)
+        ),
+        "tracking_pitch": self._reward_tracking_pitch(info["command"], self.get_pitch(data)),
+        "lin_vel_z": self._cost_lin_vel_z(self.get_global_linvel(data)),
+        "ang_vel_xy": self._cost_ang_vel_xy(self.get_global_angvel(data)),
+        "orientation": self._cost_orientation(self.get_upvector(data)),
+        "stand_still": self._cost_stand_still(info["command"], data.qpos[7:]),
+        "termination": self._cost_termination(done),
+        "pose": self._reward_pose(data.qpos[7:]),
+        "torques": self._cost_torques(data.actuator_force),
+        "action_rate": self._cost_action_rate(
+            action, info["last_act"], info["last_last_act"]
+        ),
+        "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
+        "feet_slip": self._cost_feet_slip(data, contact, info),
+        "feet_clearance": self._cost_feet_clearance(data),
+        "feet_height": self._cost_feet_height(
+            info["swing_peak"], first_contact, info
+        ),
+        "feet_air_time": self._reward_feet_air_time(
+            info["feet_air_time"], first_contact, info["command"]
+        ),
+        "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
+    }
+
+  # Tracking rewards.
+
+  def _reward_tracking_lin_vel(
+      self,
+      commands: jax.Array,
+      local_vel: jax.Array,
+  ) -> jax.Array:
+    # Tracking of linear velocity commands (xy axes).
+    lin_vel_error = jp.sum(jp.square(commands[:2] - local_vel[:2]))
+    return jp.exp(-lin_vel_error / self._config.reward_config.tracking_sigma)
+
+  def _reward_tracking_ang_vel(
+      self,
+      commands: jax.Array,
+      ang_vel: jax.Array,
+  ) -> jax.Array:
+    # Tracking of angular velocity commands (yaw).
+    ang_vel_error = jp.square(commands[2] - ang_vel[2])
+    return jp.exp(-ang_vel_error / self._config.reward_config.tracking_sigma)
+  
+  def _reward_tracking_pitch(self, command: jax.Array, current_pitch: jax.Array) -> jax.Array:
+    pitch_error = jp.square(command[3] - current_pitch)
+    return jp.exp(-pitch_error / self._config.reward_config.tracking_sigma)
+
+  # Base-related rewards.
+
+  def _cost_lin_vel_z(self, global_linvel) -> jax.Array:
+    # Penalize z axis base linear velocity.
+    return jp.square(global_linvel[2])
+
+  def _cost_ang_vel_xy(self, global_angvel) -> jax.Array:
+    # Penalize xy axes base angular velocity.
+    return jp.sum(jp.square(global_angvel[:2]))
+
+  def _cost_orientation(self, torso_zaxis: jax.Array) -> jax.Array:
+    # Penalize non flat base orientation.
+    return jp.sum(jp.square(torso_zaxis[:2]))
+
+  # Energy related rewards.
+
+  def _cost_torques(self, torques: jax.Array) -> jax.Array:
+    # Penalize torques.
+    return jp.sqrt(jp.sum(jp.square(torques))) + jp.sum(jp.abs(torques))
+
+  def _cost_energy(
+      self, qvel: jax.Array, qfrc_actuator: jax.Array
+  ) -> jax.Array:
+    # Penalize energy consumption.
+    return jp.sum(jp.abs(qvel) * jp.abs(qfrc_actuator))
+
+  def _cost_action_rate(
+      self, act: jax.Array, last_act: jax.Array, last_last_act: jax.Array
+  ) -> jax.Array:
+    del last_last_act  # Unused.
+    return jp.sum(jp.square(act - last_act))
+
+  # Other rewards.
+
+  def _reward_pose(self, qpos: jax.Array) -> jax.Array:
+    # Stay close to the default pose.
+    weight = jp.array([1.0, 1.0, 0.1] * 4)
+    return jp.exp(-jp.sum(jp.square(qpos - self._default_pose) * weight))
+
+  def _cost_stand_still(
+      self,
+      commands: jax.Array,
+      qpos: jax.Array,
+  ) -> jax.Array:
+    cmd_norm = jp.linalg.norm(commands)
+    return jp.sum(jp.abs(qpos - self._default_pose)) * (cmd_norm < 0.01)
+
+  def _cost_termination(self, done: jax.Array) -> jax.Array:
+    # Penalize early termination.
+    return done
+
+  def _cost_joint_pos_limits(self, qpos: jax.Array) -> jax.Array:
+    # Penalize joints if they cross soft limits.
+    out_of_limits = -jp.clip(qpos - self._soft_lowers, None, 0.0)
+    out_of_limits += jp.clip(qpos - self._soft_uppers, 0.0, None)
+    return jp.sum(out_of_limits)
+
+  # Feet related rewards.
+
+  def _cost_feet_slip(
+      self, data: mjx.Data, contact: jax.Array, info: dict[str, Any]
+  ) -> jax.Array:
+    cmd_norm = jp.linalg.norm(info["command"])
+    feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
+    vel_xy = feet_vel[..., :2]
+    vel_xy_norm_sq = jp.sum(jp.square(vel_xy), axis=-1)
+    return jp.sum(vel_xy_norm_sq * contact) * (cmd_norm > 0.01)
+
+  def _cost_feet_clearance(self, data: mjx.Data) -> jax.Array:
+    feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
+    vel_xy = feet_vel[..., :2]
+    vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
+    foot_pos = data.site_xpos[self._feet_site_id]
+    foot_z = foot_pos[..., -1]
+    delta = jp.abs(foot_z - self._config.reward_config.max_foot_height)
+    return jp.sum(delta * vel_norm)
+
+  def _cost_feet_height(
+      self,
+      swing_peak: jax.Array,
+      first_contact: jax.Array,
+      info: dict[str, Any],
+  ) -> jax.Array:
+    cmd_norm = jp.linalg.norm(info["command"])
+    error = swing_peak / self._config.reward_config.max_foot_height - 1.0
+    return jp.sum(jp.square(error) * first_contact) * (cmd_norm > 0.01)
+
+  def _reward_feet_air_time(
+      self, air_time: jax.Array, first_contact: jax.Array, commands: jax.Array
+  ) -> jax.Array:
+    # Reward air time.
+    cmd_norm = jp.linalg.norm(commands)
+    rew_air_time = jp.sum((air_time - 0.2) * first_contact) #default :jp.sum((air_time - 0.1) * first_contact) uhijhujhjuytrfghuytrftyuhgftyuytrfghyt6uhgtyu765ewsdfghui7654edfghjiokmki87y
+    rew_air_time *= cmd_norm > 0.01  # No reward for zero commands.
+    return rew_air_time
+
+  # Perturbation and command sampling.
+
+  def _maybe_apply_perturbation(self, state: mjx_env.State) -> mjx_env.State:
+    def gen_dir(rng: jax.Array) -> jax.Array:
+      angle = jax.random.uniform(rng, minval=0.0, maxval=jp.pi * 2)
+      return jp.array([jp.cos(angle), jp.sin(angle), 0.0])
+
+    def apply_pert(state: mjx_env.State) -> mjx_env.State:
+      t = state.info["pert_steps"] * self.dt
+      u_t = 0.5 * jp.sin(jp.pi * t / state.info["pert_duration_seconds"])
+      # kg * m/s * 1/s = m/s^2 = kg * m/s^2 (N).
+      force = (
+          u_t  # (unitless)
+          * self._torso_mass  # kg
+          * state.info["pert_mag"]  # m/s
+          / state.info["pert_duration_seconds"]  # 1/s
+      )
+      xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+      xfrc_applied = xfrc_applied.at[self._torso_body_id, :3].set(
+          force * state.info["pert_dir"]
+      )
+      data = state.data.replace(xfrc_applied=xfrc_applied)
+      state = state.replace(data=data)
+      state.info["steps_since_last_pert"] = jp.where(
+          state.info["pert_steps"] >= state.info["pert_duration"],
+          0,
+          state.info["steps_since_last_pert"],
+      )
+      state.info["pert_steps"] += 1
+      return state
+
+    def wait(state: mjx_env.State) -> mjx_env.State:
+      state.info["rng"], rng = jax.random.split(state.info["rng"])
+      state.info["steps_since_last_pert"] += 1
+      xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+      data = state.data.replace(xfrc_applied=xfrc_applied)
+      state.info["pert_steps"] = jp.where(
+          state.info["steps_since_last_pert"]
+          >= state.info["steps_until_next_pert"],
+          0,
+          state.info["pert_steps"],
+      )
+      state.info["pert_dir"] = jp.where(
+          state.info["steps_since_last_pert"]
+          >= state.info["steps_until_next_pert"],
+          gen_dir(rng),
+          state.info["pert_dir"],
+      )
+      return state.replace(data=data)
+
+    return jax.lax.cond(
+        state.info["steps_since_last_pert"]
+        >= state.info["steps_until_next_pert"],
+        apply_pert,
+        wait,
+        state,
+    )
+
+  def sample_command(self, rng: jax.Array, x_k: jax.Array) -> jax.Array:
+    rng, y_rng, w_rng, z_rng = jax.random.split(rng, 4)
+    y_k = jax.random.uniform(
+        y_rng, shape=(4,), minval=-self._cmd_a, maxval=self._cmd_a
+    )
+    z_k = jax.random.bernoulli(z_rng, self._cmd_b, shape=(4,))
+    w_k = jax.random.bernoulli(w_rng, 0.5, shape=(4,))
+    x_kp1 = x_k - w_k * (x_k - y_k * z_k)
+    return x_kp1
+
+
+----------------------------------------------------------------------------------
+---  END OF FILE: mujoco_playground/_src/locomotion/pupper/joystickwithgun.py  ---
+================================================================================
+
+================================================================================
+--- START OF FILE: mujoco_playground/_src/locomotion/pupper/pupper_locomotion_test.ipynb ---
+--------------------------------------------------------------------------------------------
+
+#------------------------- In[1]: Cell type: markdown -------------------------
+# ### Copyright notice
+
+#------------------------- In[2]: Cell type: markdown -------------------------
+# > <p><small><small>Copyright 2025 DeepMind Technologies Limited.</small></p>
+# > <p><small><small>Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>.</small></small></p>
+# > <p><small><small>Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.</small></small></p>
+
+#------------------------- In[3]: Cell type: code -------------------------
+import distutils.util
+import os
+import subprocess
+
+# @title Import packages for plotting and creating graphics
+import json
+import itertools
+import time
+from typing import Callable, List, NamedTuple, Optional, Union
+import numpy as np
+
+import mediapy as media
+import matplotlib.pyplot as plt
+
+# @title Import MuJoCo, MJX, and Brax
+from datetime import datetime
+import functools
+import os
+from typing import Any, Dict, Sequence, Tuple, Union
+from brax import base
+from brax import envs
+from brax import math
+from brax.base import Base, Motion, Transform
+from brax.base import State as PipelineState
+from brax.envs.base import Env, PipelineEnv, State
+from brax.io import html, mjcf, model
+from brax.mjx.base import State as MjxState
+from brax.training.agents.ppo import networks as ppo_networks
+from brax.training.agents.ppo import train as ppo
+from brax.training.agents.sac import networks as sac_networks
+from brax.training.agents.sac import train as sac
+from brax.training.agents.sac import train as sac_train
+from brax.training.agents.sac import networks as sac_networks
+from etils import epath
+from flax import struct
+from flax.training import orbax_utils
+from IPython.display import HTML, clear_output
+import jax
+from jax import numpy as jp
+from matplotlib import pyplot as plt
+import mediapy as media
+from ml_collections import config_dict
+import mujoco
+from mujoco import mjx
+import numpy as np
+from orbax import checkpoint as ocp
+
+#@title Import The Playground
+
+from mujoco_playground import wrapper
+from mujoco_playground import registry
+import pickle
+
+#------------------------- In[4]: Cell type: markdown -------------------------
+# # Locomotion
+# 
+# MuJoCo Playground contains a host of quadrupedal and bipedal environments (all listed below after running the command).
+
+#------------------------- In[5]: Cell type: code -------------------------
+registry.locomotion.ALL_ENVS
+
+#------------------------- In[6]: Cell type: code -------------------------
+env_name = 'PupperJoystickFlatTerrain'
+env = registry.load(env_name)
+env_cfg = registry.get_default_config(env_name)
+env_cfg.pert_config.enable = True
+env_cfg
+
+#------------------------- In[7]: Cell type: markdown -------------------------
+# ## PPO
+
+#------------------------- In[8]: Cell type: code -------------------------
+from mujoco_playground.config import locomotion_params
+ppo_params = locomotion_params.brax_ppo_config(env_name)
+ppo_params
+
+#------------------------- In[9]: Cell type: markdown -------------------------
+# Domain randomization was used to make the policy robust to sim-to-real transfer. Certain environments in the Playground have domain randomization functions implemented. They're available in the registry and can be passed directly to brax RL algorithms. The [domain randomization](https://github.com/google-deepmind/mujoco_playground/blob/main/mujoco_playground/_src/locomotion/go1/randomize.py) function randomizes over friction, armature, center of mass of the torso, and link masses, amongst other simulation parameters.
+
+#------------------------- In[10]: Cell type: code -------------------------
+registry.get_domain_randomizer(env_name)
+
+#------------------------- In[11]: Cell type: code -------------------------
+x_data, y_data, y_dataerr = [], [], []
+times = [datetime.now()]
+
+
+def progress(num_steps, metrics):
+  clear_output(wait=True)
+
+  times.append(datetime.now())
+  x_data.append(num_steps)
+  y_data.append(metrics["eval/episode_reward"])
+  y_dataerr.append(metrics["eval/episode_reward_std"])
+
+  plt.xlim([0, ppo_params["num_timesteps"] * 1.25])
+  plt.xlabel("# environment steps")
+  plt.ylabel("reward per episode")
+  plt.title(f"y={y_data[-1]:.3f}")
+  plt.errorbar(x_data, y_data, yerr=y_dataerr, color="blue")
+
+  display(plt.gcf())
+
+# ================================================================
+# --- 這裡進行了關鍵修改 ---
+# 1. 先定義相對路徑的字符串
+relative_path_str = f"checkpoints/{env_name}"
+# 2. 使用 os.path.abspath 將其轉換為絕對路徑字符串
+absolute_path_str = os.path.abspath(relative_path_str)
+# 3. 使用 epath.Path 創建最終的路徑對象
+ckpt_path = epath.Path(absolute_path_str)
+# 4. 確保目錄存在
+ckpt_path.mkdir(parents=True, exist_ok=True)
+# ================================================================
+
+
+def policy_params_fn(current_step, make_policy, params):
+    del make_policy  # Unused.
+    orbax_checkpointer = ocp.PyTreeCheckpointer()
+    save_args = orbax_utils.save_args_from_target(params)
+    path = ckpt_path / f"{current_step}"
+    orbax_checkpointer.save(path, params, force=True, save_args=save_args)
+
+    # === Custom save to .pkl ===
+    pkl_file_path = path / "params.pkl"
+    try:
+        # 🔑 Force entire pytree onto CPU numpy
+        params_cpu = jax.tree_util.tree_map(
+            lambda x: np.array(x, copy=True) if isinstance(x, jax.Array) else x,
+            params,
+        )
+
+        tmp_file = str(pkl_file_path) + ".tmp"
+        with open(tmp_file, "wb") as f:
+            pickle.dump(params_cpu, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_file, pkl_file_path)  # Atomic swap
+
+        print(f"✅ Custom save: .pkl for {env_name} saved to {pkl_file_path}")
+
+    except Exception as e:
+        print(f"❌ ERROR during custom .pkl save: {e}")
+
+randomizer = registry.get_domain_randomizer(env_name)
+ppo_training_params = dict(ppo_params)
+network_factory = ppo_networks.make_ppo_networks
+if "network_factory" in ppo_params:
+  del ppo_training_params["network_factory"]
+  network_factory = functools.partial(
+      ppo_networks.make_ppo_networks,
+      **ppo_params.network_factory
+  )
+
+train_fn = functools.partial(
+    ppo.train, **dict(ppo_training_params),
+    network_factory=network_factory,
+    randomization_fn=randomizer,
+    progress_fn=progress,
+    policy_params_fn=policy_params_fn,
+)
+env_cfg.pert_config.enable = True
+
+#------------------------- In[12]: Cell type: code -------------------------
+make_inference_fn, params, metrics = train_fn(
+    environment=env,
+    eval_env=registry.load(env_name, config=env_cfg),
+    wrap_env_fn=wrapper.wrap_for_brax_training,
+)
+print(f"time to jit: {times[1] - times[0]}")
+print(f"time to train: {times[-1] - times[1]}")
+
+#------------------------- In[13]: Cell type: markdown -------------------------
+# Let's rollout and render the resulting policy!
+
+#------------------------- In[14]: Cell type: code -------------------------
+# Enable perturbation in the eval env.
+env_cfg = registry.get_default_config(env_name)
+env_cfg.pert_config.enable = True
+env_cfg.pert_config.velocity_kick = [3.0, 6.0]
+env_cfg.pert_config.kick_wait_times = [5.0, 15.0]
+env_cfg.command_config.a = [1.5, 0.8, 2*jp.pi, 0.5]
+eval_env = registry.load(env_name, config=env_cfg)
+velocity_kick_range = [0.0, 0.0]  # Disable velocity kick.
+kick_duration_range = [0.05, 0.2]
+
+jit_reset = jax.jit(eval_env.reset)
+jit_step = jax.jit(eval_env.step)
+jit_inference_fn = jax.jit(make_inference_fn(params, deterministic=True))
+
+#------------------------- In[15]: Cell type: code -------------------------
+#@title Rollout and Render
+from mujoco_playground._src.gait import draw_joystick_command
+
+x_vel = 0.0  #@param {type: "number"}
+y_vel = -0.3  #@param {type: "number"}
+yaw_vel = 0.0  #@param {type: "number"}
+pitch_angle = -0.0 #@param {type: "number"}
+
+
+def sample_pert(rng):
+  rng, key1, key2 = jax.random.split(rng, 3)
+  pert_mag = jax.random.uniform(
+      key1, minval=velocity_kick_range[0], maxval=velocity_kick_range[1]
+  )
+  duration_seconds = jax.random.uniform(
+      key2, minval=kick_duration_range[0], maxval=kick_duration_range[1]
+  )
+  duration_steps = jp.round(duration_seconds / eval_env.dt).astype(jp.int32)
+  state.info["pert_mag"] = pert_mag
+  state.info["pert_duration"] = duration_steps
+  state.info["pert_duration_seconds"] = duration_seconds
+  return rng
+
+
+rng = jax.random.PRNGKey(0)
+rollout = []
+modify_scene_fns = []
+
+swing_peak = []
+rewards = []
+linvel = []
+angvel = []
+track = []
+foot_vel = []
+rews = []
+contact = []
+command = jp.array([x_vel, y_vel, yaw_vel, pitch_angle])
+
+state = jit_reset(rng)
+if state.info["steps_since_last_pert"] < state.info["steps_until_next_pert"]:
+  rng = sample_pert(rng)
+state.info["command"] = command
+for i in range(env_cfg.episode_length):
+  if state.info["steps_since_last_pert"] < state.info["steps_until_next_pert"]:
+    rng = sample_pert(rng)
+  act_rng, rng = jax.random.split(rng)
+  ctrl, _ = jit_inference_fn(state.obs, act_rng)
+  state = jit_step(state, ctrl)
+  state.info["command"] = command
+  rews.append(
+      {k: v for k, v in state.metrics.items() if k.startswith("reward/")}
+  )
+  rollout.append(state)
+  swing_peak.append(state.info["swing_peak"])
+  rewards.append(
+      {k[7:]: v for k, v in state.metrics.items() if k.startswith("reward/")}
+  )
+  linvel.append(env.get_global_linvel(state.data))
+  angvel.append(env.get_gyro(state.data))
+  track.append(
+      env._reward_tracking_lin_vel(
+          state.info["command"], env.get_local_linvel(state.data)
+      )
+  )
+
+  feet_vel = state.data.sensordata[env._foot_linvel_sensor_adr]
+  vel_xy = feet_vel[..., :2]
+  vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
+  foot_vel.append(vel_norm)
+
+  contact.append(state.info["last_contact"])
+
+  xyz = np.array(state.data.xpos[env._torso_body_id])
+  xyz += np.array([0, 0, 0.2])
+  x_axis = state.data.xmat[env._torso_body_id, 0]
+  yaw = -np.arctan2(x_axis[1], x_axis[0])
+  modify_scene_fns.append(
+      functools.partial(
+          draw_joystick_command,
+          cmd=state.info["command"],
+          xyz=xyz,
+          theta=yaw,
+          scl=abs(state.info["command"][0])
+          / env_cfg.command_config.a[0],
+      )
+  )
+
+
+render_every = 2
+fps = 1.0 / eval_env.dt / render_every
+traj = rollout[::render_every]
+mod_fns = modify_scene_fns[::render_every]
+
+scene_option = mujoco.MjvOption()
+scene_option.geomgroup[2] = True
+scene_option.geomgroup[3] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = True
+
+frames = eval_env.render(
+    traj,
+    camera="track",
+    scene_option=scene_option,
+    width=640,
+    height=480,
+    modify_scene_fns=mod_fns,
+)
+media.show_video(frames, fps=fps, loop=False)
+
+
+#------------------------- In[16]: Cell type: markdown -------------------------
+# Let's visualize the feet positions and the positional drift compared to the commanded linear and angular velocity. This is useful for debugging how well the policy follows the commands!
+
+#------------------------- In[17]: Cell type: code -------------------------
+#@title Plot each foot in a 2x2 grid.
+
+swing_peak = jp.array(swing_peak)
+names = ["FR", "FL", "RR", "RL"]
+colors = ["r", "g", "b", "y"]
+fig, axs = plt.subplots(2, 2)
+for i, ax in enumerate(axs.flat):
+  ax.plot(swing_peak[:, i], color=colors[i])
+  ax.set_ylim([0, env_cfg.reward_config.max_foot_height * 1.25])
+  ax.axhline(env_cfg.reward_config.max_foot_height, color="k", linestyle="--")
+  ax.set_title(names[i])
+  ax.set_xlabel("time")
+  ax.set_ylabel("height")
+plt.tight_layout()
+plt.show()
+
+linvel_x = jp.array(linvel)[:, 0]
+linvel_y = jp.array(linvel)[:, 1]
+angvel_yaw = jp.array(angvel)[:, 2]
+
+# Plot whether velocity is within the command range.
+linvel_x = jp.convolve(linvel_x, jp.ones(10) / 10, mode="same")
+linvel_y = jp.convolve(linvel_y, jp.ones(10) / 10, mode="same")
+angvel_yaw = jp.convolve(angvel_yaw, jp.ones(10) / 10, mode="same")
+
+fig, axes = plt.subplots(3, 1, figsize=(10, 10))
+axes[0].plot(linvel_x)
+axes[1].plot(linvel_y)
+axes[2].plot(angvel_yaw)
+
+axes[0].set_ylim(
+    -env_cfg.command_config.a[0], env_cfg.command_config.a[0]
+)
+axes[1].set_ylim(
+    -env_cfg.command_config.a[1], env_cfg.command_config.a[1]
+)
+axes[2].set_ylim(
+    -env_cfg.command_config.a[2], env_cfg.command_config.a[2]
+)
+
+for i, ax in enumerate(axes):
+  ax.axhline(state.info["command"][i], color="red", linestyle="--")
+
+labels = ["dx", "dy", "dyaw"]
+for i, ax in enumerate(axes):
+  ax.set_ylabel(labels[i])
+
+#------------------------- In[18]: Cell type: markdown -------------------------
+# Now let's visualize what it looks like to slowly increase linear velocity commands.
+
+#------------------------- In[19]: Cell type: code -------------------------
+#@title Slowly increase linvel commands
+
+rng = jax.random.PRNGKey(0)
+rollout = []
+modify_scene_fns = []
+swing_peak = []
+linvel = []
+angvel = []
+
+y = 0.25
+command = jp.array([0, y, 0, 0])
+state = jit_reset(rng)
+for i in range(1_400):
+  # Increase the forward velocity by 0.25 m/s every 200 steps.
+  if i % 200 == 0:
+
+    y -= 0.25
+    print(f"Setting y to {y}")
+    command = jp.array([0, y, 0, 0])
+  state.info["command"] = command
+  if state.info["steps_since_last_pert"] < state.info["steps_until_next_pert"]:
+    rng = sample_pert(rng)
+  act_rng, rng = jax.random.split(rng)
+  ctrl, _ = jit_inference_fn(state.obs, act_rng)
+  state = jit_step(state, ctrl)
+  rollout.append(state)
+  swing_peak.append(state.info["swing_peak"])
+  linvel.append(env.get_global_linvel(state.data))
+  angvel.append(env.get_gyro(state.data))
+  xyz = np.array(state.data.xpos[env._torso_body_id])
+  xyz += np.array([0, 0, 0.2])
+  x_axis = state.data.xmat[env._torso_body_id, 0]
+  yaw = -np.arctan2(x_axis[1], x_axis[0])
+  modify_scene_fns.append(
+      functools.partial(
+          draw_joystick_command,
+          cmd=command,
+          xyz=xyz,
+          theta=yaw,
+          scl=abs(command[0]) / env_cfg.command_config.a[0],
+      )
+  )
+
+
+# Plot each foot in a 2x2 grid.
+swing_peak = jp.array(swing_peak)
+names = ["FR", "FL", "RR", "RL"]
+colors = ["r", "g", "b", "y"]
+fig, axs = plt.subplots(2, 2)
+for i, ax in enumerate(axs.flat):
+  ax.plot(swing_peak[:, i], color=colors[i])
+  ax.set_ylim([0, env_cfg.reward_config.max_foot_height * 1.25])
+  ax.axhline(env_cfg.reward_config.max_foot_height, color="k", linestyle="--")
+  ax.set_title(names[i])
+  ax.set_xlabel("time")
+  ax.set_ylabel("height")
+plt.tight_layout()
+plt.show()
+
+linvel_x = jp.array(linvel)[:, 0]
+linvel_y = jp.array(linvel)[:, 1]
+angvel_yaw = jp.array(angvel)[:, 2]
+
+# Plot whether velocity is within the command range.
+linvel_x = jp.convolve(linvel_x, jp.ones(10) / 10, mode="same")
+linvel_y = jp.convolve(linvel_y, jp.ones(10) / 10, mode="same")
+angvel_yaw = jp.convolve(angvel_yaw, jp.ones(10) / 10, mode="same")
+
+fig, axes = plt.subplots(3, 1, figsize=(10, 10))
+axes[0].plot(linvel_x)
+axes[1].plot(linvel_y)
+axes[2].plot(angvel_yaw)
+
+axes[0].set_ylim(
+    -env_cfg.command_config.a[0], env_cfg.command_config.a[0]
+)
+axes[1].set_ylim(
+    -env_cfg.command_config.a[1], env_cfg.command_config.a[1]
+)
+axes[2].set_ylim(
+    -env_cfg.command_config.a[2], env_cfg.command_config.a[2]
+)
+
+for i, ax in enumerate(axes):
+  ax.axhline(state.info["command"][i], color="red", linestyle="--")
+
+labels = ["dx", "dy", "dyaw"]
+for i, ax in enumerate(axes):
+  ax.set_ylabel(labels[i])
+
+
+render_every = 2
+fps = 1.0 / eval_env.dt / render_every
+print(f"fps: {fps}")
+
+traj = rollout[::render_every]
+mod_fns = modify_scene_fns[::render_every]
+assert len(traj) == len(mod_fns)
+
+scene_option = mujoco.MjvOption()
+scene_option.geomgroup[2] = True
+scene_option.geomgroup[3] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = True
+
+frames = eval_env.render(
+    traj,
+    camera="track",
+    height=480,
+    width=640,
+    modify_scene_fns=mod_fns,
+    scene_option=scene_option,
+)
+media.show_video(frames, fps=fps, loop=False)
+
+#------------------------- In[20]: Cell type: markdown -------------------------
+# ## Recoil
+# 
+# Additional policies are available for the Unitree Go1 such as fall-recovery, handstand, and footstand policies. We'll use the handstand policy as an opportunity to demonstrate finetuning policies from prior checkpoints. This will allow us to quickly iterate on training curriculums by modifying the enviornment config between runs.
+# 
+# For the Go1 handstand policy, we'll first train with the default configuration, and then add an energy penalty to make the policy smoother and more likely to transfer onto the robot.
+
+#------------------------- In[21]: Cell type: code -------------------------
+from mujoco_playground.config import locomotion_params
+
+env_name = 'PupperJoystickWithGun'
+env = registry.load(env_name)
+env_cfg = registry.get_default_config(env_name)
+ppo_params = locomotion_params.brax_ppo_config(env_name)
+
+#------------------------- In[22]: Cell type: markdown -------------------------
+# Let's create a checkpoint directory and then train a policy with checkpointing.
+
+#------------------------- In[23]: Cell type: code -------------------------
+ckpt_path = epath.Path("checkpoints").resolve() / env_name
+ckpt_path.mkdir(parents=True, exist_ok=True)
+print(f"{ckpt_path}")
+
+with open(ckpt_path / "config.json", "w") as fp:
+  json.dump(env_cfg.to_dict(), fp, indent=4)
+
+#------------------------- In[24]: Cell type: code -------------------------
+#@title Training fn definition
+x_data, y_data, y_dataerr = [], [], []
+times = [datetime.now()]
+
+"""
+def policy_params_fn(current_step, make_policy, params):
+  del make_policy  # Unused.
+  orbax_checkpointer = ocp.PyTreeCheckpointer()
+  save_args = orbax_utils.save_args_from_target(params)
+  path = ckpt_path / f"{current_step}"
+  orbax_checkpointer.save(path, params, force=True, save_args=save_args)
+"""
+
+def progress(num_steps, metrics):
+  clear_output(wait=True)
+
+  times.append(datetime.now())
+  x_data.append(num_steps)
+  y_data.append(metrics["eval/episode_reward"])
+  y_dataerr.append(metrics["eval/episode_reward_std"])
+
+  plt.xlim([0, ppo_params["num_timesteps"] * 1.25])
+  plt.xlabel("# environment steps")
+  plt.ylabel("reward per episode")
+  plt.title(f"y={y_data[-1]:.3f}")
+  plt.errorbar(x_data, y_data, yerr=y_dataerr, color="blue")
+
+  display(plt.gcf())
+
+def policy_params_fn(current_step, make_policy, params):
+    del make_policy  # Unused.
+    orbax_checkpointer = ocp.PyTreeCheckpointer()
+    save_args = orbax_utils.save_args_from_target(params)
+    path = ckpt_path / f"{current_step}"
+    orbax_checkpointer.save(path, params, force=True, save_args=save_args)
+
+    # === Custom save to .pkl ===
+    pkl_file_path = path / "params.pkl"
+    try:
+        # 🔑 Force entire pytree onto CPU numpy
+        params_cpu = jax.tree_util.tree_map(
+            lambda x: np.array(x, copy=True) if isinstance(x, jax.Array) else x,
+            params,
+        )
+
+        tmp_file = str(pkl_file_path) + ".tmp"
+        with open(tmp_file, "wb") as f:
+            pickle.dump(params_cpu, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_file, pkl_file_path)  # Atomic swap
+
+        print(f"✅ Custom save: .pkl for {env_name} saved to {pkl_file_path}")
+
+    except Exception as e:
+        print(f"❌ ERROR during custom .pkl save: {e}")
+
+
+
+randomizer = registry.get_domain_randomizer(env_name)
+ppo_training_params = dict(ppo_params)
+network_factory = ppo_networks.make_ppo_networks
+if "network_factory" in ppo_params:
+  del ppo_training_params["network_factory"]
+  network_factory = functools.partial(
+      ppo_networks.make_ppo_networks,
+      **ppo_params.network_factory
+  )
+
+train_fn = functools.partial(
+    ppo.train, **dict(ppo_training_params),
+    network_factory=network_factory,
+    randomization_fn=randomizer,
+    progress_fn=progress,
+    policy_params_fn=policy_params_fn,
+)
+print(f"Command config: {env_cfg.command_config.a}")
+
+env_cfg.reward_config.scales.orientation = -10.0
+
+#------------------------- In[25]: Cell type: markdown -------------------------
+# Before recoil training
+
+#------------------------- In[26]: Cell type: code -------------------------
+env_cfg.pert_config.enable = True
+env_cfg.firearm_recoil.force_scale_range = [0.0, 0.01]
+env_cfg.command_config.a = [0.3, 0.5, 0.3, 0.5]
+print(f"Command config: {env_cfg.command_config.a}")
+
+make_inference_fn, params, metrics = train_fn(
+    environment=registry.load(env_name, config=env_cfg),
+    eval_env=registry.load(env_name, config=env_cfg),
+    wrap_env_fn=wrapper.wrap_for_brax_training,
+)
+print(f"time to jit: {times[1] - times[0]}")
+print(f"time to train: {times[-1] - times[1]}")
+
+#------------------------- In[27]: Cell type: code -------------------------
+
+# Enable perturbation in the eval env.
+env_cfg = registry.get_default_config(env_name)
+env_cfg.pert_config.enable = False
+env_cfg.pert_config.velocity_kick = [3.0, 6.0]
+env_cfg.pert_config.kick_wait_times = [5.0, 15.0]
+env_cfg.command_config.a = [0.3, 0.5, 0.3, 0.5]
+eval_env = registry.load(env_name, config=env_cfg)
+velocity_kick_range = [0.0, 0.0]  # Disable velocity kick.
+kick_duration_range = [0.05, 0.2]
+env_cfg.firearm_recoil.force_scale_range = [0.0, 0.01]
+
+#env_cfg.firearm_recoil.enable = False
+
+jit_reset = jax.jit(eval_env.reset)
+jit_step = jax.jit(eval_env.step)
+jit_inference_fn = jax.jit(make_inference_fn(params, deterministic=True))
+
+from mujoco_playground._src.gait import draw_joystick_command
+
+x_vel = 0.0  #@param {type: "number"}
+y_vel = -1.5    #@param {type: "number"}
+yaw_vel = 0.0  #@param {type: "number"}
+pitch_angle = -0.0 #@param {type: "number"}
+
+
+def sample_pert(rng):
+  rng, key1, key2 = jax.random.split(rng, 3)
+  pert_mag = jax.random.uniform(
+      key1, minval=velocity_kick_range[0], maxval=velocity_kick_range[1]
+  )
+  duration_seconds = jax.random.uniform(
+      key2, minval=kick_duration_range[0], maxval=kick_duration_range[1]
+  )
+  duration_steps = jp.round(duration_seconds / eval_env.dt).astype(jp.int32)
+  state.info["pert_mag"] = pert_mag
+  state.info["pert_duration"] = duration_steps
+  state.info["pert_duration_seconds"] = duration_seconds
+  return rng
+
+
+rng = jax.random.PRNGKey(0)
+rollout = []
+modify_scene_fns = []
+
+swing_peak = []
+rewards = []
+linvel = []
+angvel = []
+track = []
+foot_vel = []
+rews = []
+contact = []
+command = jp.array([x_vel, y_vel, yaw_vel, pitch_angle])
+
+state = jit_reset(rng)
+if state.info["steps_since_last_pert"] < state.info["steps_until_next_pert"]:
+  rng = sample_pert(rng)
+state.info["command"] = command
+for i in range(env_cfg.episode_length):
+  if state.info["steps_since_last_pert"] < state.info["steps_until_next_pert"]:
+    rng = sample_pert(rng)
+  act_rng, rng = jax.random.split(rng)
+  ctrl, _ = jit_inference_fn(state.obs, act_rng)
+  state = jit_step(state, ctrl)
+  state.info["command"] = command
+  rews.append(
+      {k: v for k, v in state.metrics.items() if k.startswith("reward/")}
+  )
+  rollout.append(state)
+  swing_peak.append(state.info["swing_peak"])
+  rewards.append(
+      {k[7:]: v for k, v in state.metrics.items() if k.startswith("reward/")}
+  )
+  linvel.append(env.get_global_linvel(state.data))
+  angvel.append(env.get_gyro(state.data))
+  track.append(
+      env._reward_tracking_lin_vel(
+          state.info["command"], env.get_local_linvel(state.data)
+      )
+  )
+
+  feet_vel = state.data.sensordata[env._foot_linvel_sensor_adr]
+  vel_xy = feet_vel[..., :2]
+  vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
+  foot_vel.append(vel_norm)
+
+  contact.append(state.info["last_contact"])
+
+  xyz = np.array(state.data.xpos[env._torso_body_id])
+  xyz += np.array([0, 0, 0.2])
+  x_axis = state.data.xmat[env._torso_body_id, 0]
+  yaw = -np.arctan2(x_axis[1], x_axis[0])
+  modify_scene_fns.append(
+      functools.partial(
+          draw_joystick_command,
+          cmd=state.info["command"],
+          xyz=xyz,
+          theta=yaw,
+          scl=abs(state.info["command"][0])
+          / env_cfg.command_config.a[0],
+      )
+  )
+
+
+render_every = 2
+fps = 1.0 / eval_env.dt / render_every
+traj = rollout[::render_every]
+mod_fns = modify_scene_fns[::render_every]
+
+scene_option = mujoco.MjvOption()
+scene_option.geomgroup[2] = True
+scene_option.geomgroup[3] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = True
+
+frames = eval_env.render(
+    traj,
+    camera="track",
+    scene_option=scene_option,
+    width=640,
+    height=480,
+    modify_scene_fns=mod_fns,
+)
+media.show_video(frames, fps=fps, loop=False)
+
+import matplotlib.pyplot as plt
+
+# Extract roll, pitch, yaw from orientation matrices over time
+orientations = []
+recoil_applied = []
+
+for state in rollout:
+    xmat = np.array(state.data.xmat[env._torso_body_id].reshape(3, 3))
+    # Convert rotation matrix to roll, pitch, yaw
+    roll = np.arctan2(xmat[2, 1], xmat[2, 2])
+    pitch = np.arctan2(-xmat[2, 0], np.sqrt(xmat[2, 1]**2 + xmat[2, 2]**2))
+    yaw = np.arctan2(xmat[1, 0], xmat[0, 0])
+    orientations.append([roll, pitch, yaw])
+
+    # Mark time step if recoil was applied
+    recoil_applied.append(int(state.info.get("firearm_recoil_active", 0)))
+
+orientations = np.array(orientations)
+timesteps = np.arange(len(orientations)) * eval_env.dt
+
+# Plot
+plt.figure(figsize=(12, 6))
+labels = ['Roll', 'Pitch', 'Yaw']
+for i in range(3):
+    plt.plot(timesteps, orientations[:, i], label=labels[i])
+
+# Mark recoil times
+for t, is_recoil in zip(timesteps, recoil_applied):
+    if is_recoil:
+        plt.axvline(t, color='red', linestyle='--', alpha=0.5)
+
+plt.title("Robot Orientation (Roll, Pitch, Yaw) Over Time")
+plt.xlabel("Time (s)")
+plt.ylabel("Angle (rad)")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+#------------------------- In[28]: Cell type: markdown -------------------------
+# The initial policy takes 8 minutes to train on an RTX 4090.
+
+#------------------------- In[29]: Cell type: code -------------------------
+env_cfg.pert_config.enable = True
+env_cfg.firearm_recoil.enable = True
+env_cfg.firearm_recoil.force_scale_range = [4.1, 4.3]
+env_cfg.command_config.a = [0.0, 0.0, 0.0, 0.0]
+
+env_cfg.reward_config.scales.orientation = -10.0
+
+
+make_inference_fn, params, metrics = train_fn(
+    environment=env,
+    eval_env=registry.load(env_name, config=env_cfg),
+    wrap_env_fn=wrapper.wrap_for_brax_training,
+)
+print(f"time to jit: {times[1] - times[0]}")
+print(f"time to train: {times[-1] - times[1]}")
+
+#------------------------- In[30]: Cell type: markdown -------------------------
+# Let's visualize the current policy.
+
+#------------------------- In[31]: Cell type: code -------------------------
+
+# Enable perturbation in the eval env.
+env_cfg = registry.get_default_config(env_name)
+env_cfg.pert_config.enable = False
+env_cfg.pert_config.velocity_kick = [3.0, 6.0]
+env_cfg.pert_config.kick_wait_times = [5.0, 15.0]
+env_cfg.command_config.a = [1.5, 0.8, 2*jp.pi, 0.5]
+eval_env = registry.load(env_name, config=env_cfg)
+velocity_kick_range = [0.0, 0.0]  # Disable velocity kick.
+kick_duration_range = [0.05, 0.2]
+
+jit_reset = jax.jit(eval_env.reset)
+jit_step = jax.jit(eval_env.step)
+jit_inference_fn = jax.jit(make_inference_fn(params, deterministic=True))
+
+from mujoco_playground._src.gait import draw_joystick_command
+
+x_vel = 0.0  #@param {type: "number"}
+y_vel = -0.0  #@param {type: "number"}
+yaw_vel = 0.0  #@param {type: "number"}
+pitch_angle = -0.0 #@param {type: "number"}
+
+
+def sample_pert(rng):
+  rng, key1, key2 = jax.random.split(rng, 3)
+  pert_mag = jax.random.uniform(
+      key1, minval=velocity_kick_range[0], maxval=velocity_kick_range[1]
+  )
+  duration_seconds = jax.random.uniform(
+      key2, minval=kick_duration_range[0], maxval=kick_duration_range[1]
+  )
+  duration_steps = jp.round(duration_seconds / eval_env.dt).astype(jp.int32)
+  state.info["pert_mag"] = pert_mag
+  state.info["pert_duration"] = duration_steps
+  state.info["pert_duration_seconds"] = duration_seconds
+  return rng
+
+
+rng = jax.random.PRNGKey(0)
+rollout = []
+modify_scene_fns = []
+
+swing_peak = []
+rewards = []
+linvel = []
+angvel = []
+track = []
+foot_vel = []
+rews = []
+contact = []
+command = jp.array([x_vel, y_vel, yaw_vel, pitch_angle])
+
+state = jit_reset(rng)
+if state.info["steps_since_last_pert"] < state.info["steps_until_next_pert"]:
+  rng = sample_pert(rng)
+state.info["command"] = command
+for i in range(env_cfg.episode_length):
+  if state.info["steps_since_last_pert"] < state.info["steps_until_next_pert"]:
+    rng = sample_pert(rng)
+  act_rng, rng = jax.random.split(rng)
+  ctrl, _ = jit_inference_fn(state.obs, act_rng)
+  state = jit_step(state, ctrl)
+  state.info["command"] = command
+  rews.append(
+      {k: v for k, v in state.metrics.items() if k.startswith("reward/")}
+  )
+  rollout.append(state)
+  swing_peak.append(state.info["swing_peak"])
+  rewards.append(
+      {k[7:]: v for k, v in state.metrics.items() if k.startswith("reward/")}
+  )
+  linvel.append(env.get_global_linvel(state.data))
+  angvel.append(env.get_gyro(state.data))
+  track.append(
+      env._reward_tracking_lin_vel(
+          state.info["command"], env.get_local_linvel(state.data)
+      )
+  )
+
+  feet_vel = state.data.sensordata[env._foot_linvel_sensor_adr]
+  vel_xy = feet_vel[..., :2]
+  vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
+  foot_vel.append(vel_norm)
+
+  contact.append(state.info["last_contact"])
+
+  xyz = np.array(state.data.xpos[env._torso_body_id])
+  xyz += np.array([0, 0, 0.2])
+  x_axis = state.data.xmat[env._torso_body_id, 0]
+  yaw = -np.arctan2(x_axis[1], x_axis[0])
+  modify_scene_fns.append(
+      functools.partial(
+          draw_joystick_command,
+          cmd=state.info["command"],
+          xyz=xyz,
+          theta=yaw,
+          scl=abs(state.info["command"][0])
+          / env_cfg.command_config.a[0],
+      )
+  )
+
+
+render_every = 2
+fps = 1.0 / eval_env.dt / render_every
+traj = rollout[::render_every]
+mod_fns = modify_scene_fns[::render_every]
+
+scene_option = mujoco.MjvOption()
+scene_option.geomgroup[2] = True
+scene_option.geomgroup[3] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = True
+
+frames = eval_env.render(
+    traj,
+    camera="track",
+    scene_option=scene_option,
+    width=640,
+    height=480,
+    modify_scene_fns=mod_fns,
+)
+media.show_video(frames, fps=fps, loop=False)
+
+import matplotlib.pyplot as plt
+
+# Extract roll, pitch, yaw from orientation matrices over time
+orientations = []
+recoil_applied = []
+
+for state in rollout:
+    xmat = np.array(state.data.xmat[env._torso_body_id].reshape(3, 3))
+    # Convert rotation matrix to roll, pitch, yaw
+    roll = np.arctan2(xmat[2, 1], xmat[2, 2])
+    pitch = np.arctan2(-xmat[2, 0], np.sqrt(xmat[2, 1]**2 + xmat[2, 2]**2))
+    yaw = np.arctan2(xmat[1, 0], xmat[0, 0])
+    orientations.append([roll, pitch, yaw])
+
+    # Mark time step if recoil was applied
+    recoil_applied.append(int(state.info.get("firearm_recoil_active", 0)))
+
+orientations = np.array(orientations)
+timesteps = np.arange(len(orientations)) * eval_env.dt
+
+# Plot
+plt.figure(figsize=(12, 6))
+labels = ['Roll', 'Pitch', 'Yaw']
+for i in range(3):
+    plt.plot(timesteps, orientations[:, i], label=labels[i])
+
+# Mark recoil times
+for t, is_recoil in zip(timesteps, recoil_applied):
+    if is_recoil:
+        plt.axvline(t, color='red', linestyle='--', alpha=0.5)
+
+plt.title("Robot Orientation (Roll, Pitch, Yaw) Over Time")
+plt.xlabel("Time (s)")
+plt.ylabel("Angle (rad)")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+#------------------------- In[32]: Cell type: code -------------------------
+
+env_cfg.command_config.a = [0.2, 0.5, 0.2, 0.0]
+env_cfg.reward_config.scales.tracking_lin_vel = 7.25
+env_cfg.reward_config.scales.tracking_pitch = 1.5
+env_cfg.reward_config.scales.orientation = -5.0
+
+ckpt_path = epath.Path("checkpoints").resolve() / env_name
+ckpt_path.mkdir(parents=True, exist_ok=True)
+print(f"{ckpt_path}")
+
+with open(ckpt_path / "config.json", "w") as fp:
+  json.dump(env_cfg.to_dict(), fp, indent=4)
+
+#@title Training fn definition
+x_data, y_data, y_dataerr = [], [], []
+times = [datetime.now()]
+"""
+
+def policy_params_fn(current_step, make_policy, params):
+  del make_policy  # Unused.
+  orbax_checkpointer = ocp.PyTreeCheckpointer()
+  save_args = orbax_utils.save_args_from_target(params)
+  path = ckpt_path / f"{current_step}"
+  orbax_checkpointer.save(path, params, force=True, save_args=save_args)
+"""
+def policy_params_fn(current_step, make_policy, params):
+    del make_policy  # Unused.
+    orbax_checkpointer = ocp.PyTreeCheckpointer()
+    save_args = orbax_utils.save_args_from_target(params)
+    path = ckpt_path / f"{current_step}"
+    orbax_checkpointer.save(path, params, force=True, save_args=save_args)
+
+    # === Custom save to .pkl ===
+    pkl_file_path = path / "params.pkl"
+    try:
+        # 🔑 Force entire pytree onto CPU numpy
+        params_cpu = jax.tree_util.tree_map(
+            lambda x: np.array(x, copy=True) if isinstance(x, jax.Array) else x,
+            params,
+        )
+
+        tmp_file = str(pkl_file_path) + ".tmp"
+        with open(tmp_file, "wb") as f:
+            pickle.dump(params_cpu, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_file, pkl_file_path)  # Atomic swap
+
+        print(f"✅ Custom save: .pkl for {env_name} saved to {pkl_file_path}")
+
+    except Exception as e:
+        print(f"❌ ERROR during custom .pkl save: {e}")
+
+
+
+
+def progress(num_steps, metrics):
+  clear_output(wait=True)
+
+  times.append(datetime.now())
+  x_data.append(num_steps)
+  y_data.append(metrics["eval/episode_reward"])
+  y_dataerr.append(metrics["eval/episode_reward_std"])
+
+  plt.xlim([0, ppo_params["num_timesteps"] * 1.25])
+  plt.xlabel("# environment steps")
+  plt.ylabel("reward per episode")
+  plt.title(f"y={y_data[-1]:.3f}")
+  plt.errorbar(x_data, y_data, yerr=y_dataerr, color="blue")
+
+  display(plt.gcf())
+
+randomizer = registry.get_domain_randomizer(env_name)
+ppo_training_params = dict(ppo_params)
+network_factory = ppo_networks.make_ppo_networks
+if "network_factory" in ppo_params:
+  del ppo_training_params["network_factory"]
+  network_factory = functools.partial(
+      ppo_networks.make_ppo_networks,
+      **ppo_params.network_factory
+  )
+print(f"Command config: {env_cfg.command_config.a}")
+train_fn = functools.partial(
+    ppo.train, **dict(ppo_training_params),
+    network_factory=network_factory,
+    randomization_fn=randomizer,
+    progress_fn=progress,
+    policy_params_fn=policy_params_fn,
+)
+make_inference_fn, params, metrics = train_fn(
+    environment=registry.load(env_name, config=env_cfg),
+    eval_env=registry.load(env_name, config=env_cfg),
+    wrap_env_fn=wrapper.wrap_for_brax_training,
+)
+print(f"time to jit: {times[1] - times[0]}")
+print(f"time to train: {times[-1] - times[1]}")
+
+#------------------------- In[33]: Cell type: code -------------------------
+env_cfg = registry.get_default_config(env_name)
+env_cfg.pert_config.enable = True
+env_cfg.pert_config.velocity_kick = [3.0, 6.0]
+env_cfg.pert_config.kick_wait_times = [5.0, 15.0]
+env_cfg.command_config.a = [0.3, 0.5, 0.3, 0.5]
+eval_env = registry.load(env_name, config=env_cfg)
+velocity_kick_range = [0.0, 0.0]  # Disable velocity kick.
+kick_duration_range = [0.05, 0.2]
+
+jit_reset = jax.jit(eval_env.reset)
+jit_step = jax.jit(eval_env.step)
+jit_inference_fn = jax.jit(make_inference_fn(params, deterministic=True))
+
+from mujoco_playground._src.gait import draw_joystick_command
+
+x_vel = 0.0  #@param {type: "number"}
+y_vel = -0.15  #@param {type: "number"}
+yaw_vel = 0.0  #@param {type: "number"}
+pitch_angle = -0.0#@param {type: "number"}
+
+
+def sample_pert(rng):
+  rng, key1, key2 = jax.random.split(rng, 3)
+  pert_mag = jax.random.uniform(
+      key1, minval=velocity_kick_range[0], maxval=velocity_kick_range[1]
+  )
+  duration_seconds = jax.random.uniform(
+      key2, minval=kick_duration_range[0], maxval=kick_duration_range[1]
+  )
+  duration_steps = jp.round(duration_seconds / eval_env.dt).astype(jp.int32)
+  state.info["pert_mag"] = pert_mag
+
+
+  state.info["pert_duration"] = duration_steps
+  state.info["pert_duration_seconds"] = duration_seconds
+  return rng
+
+
+rng = jax.random.PRNGKey(0)
+rollout = []
+modify_scene_fns = []
+
+swing_peak = []
+rewards = []
+linvel = []
+angvel = []
+track = []
+foot_vel = []
+rews = []
+contact = []
+command = jp.array([x_vel, y_vel, yaw_vel, pitch_angle])
+
+state = jit_reset(rng)
+if state.info["steps_since_last_pert"] < state.info["steps_until_next_pert"]:
+  rng = sample_pert(rng)
+state.info["command"] = command
+for i in range(env_cfg.episode_length):
+  if state.info["steps_since_last_pert"] < state.info["steps_until_next_pert"]:
+    rng = sample_pert(rng)
+  act_rng, rng = jax.random.split(rng)
+  ctrl, _ = jit_inference_fn(state.obs, act_rng)
+  state = jit_step(state, ctrl)
+  state.info["command"] = command
+  rews.append(
+      {k: v for k, v in state.metrics.items() if k.startswith("reward/")}
+  )
+  rollout.append(state)
+  swing_peak.append(state.info["swing_peak"])
+  rewards.append(
+      {k[7:]: v for k, v in state.metrics.items() if k.startswith("reward/")}
+  )
+  linvel.append(env.get_global_linvel(state.data))
+  angvel.append(env.get_gyro(state.data))
+  track.append(
+      env._reward_tracking_lin_vel(
+          state.info["command"], env.get_local_linvel(state.data)
+      )
+  )
+
+  feet_vel = state.data.sensordata[env._foot_linvel_sensor_adr]
+  vel_xy = feet_vel[..., :2]
+  vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
+  foot_vel.append(vel_norm)
+
+  contact.append(state.info["last_contact"])
+
+  xyz = np.array(state.data.xpos[env._torso_body_id])
+  xyz += np.array([0, 0, 0.2])
+  x_axis = state.data.xmat[env._torso_body_id, 0]
+  yaw = -np.arctan2(x_axis[1], x_axis[0])
+  modify_scene_fns.append(
+      functools.partial(
+          draw_joystick_command,
+          cmd=state.info["command"],
+          xyz=xyz,
+          theta=yaw,
+          scl=abs(state.info["command"][0])
+          / env_cfg.command_config.a[0],
+      )
+  )
+
+
+render_every = 2
+fps = 1.0 / eval_env.dt / render_every
+traj = rollout[::render_every]
+mod_fns = modify_scene_fns[::render_every]
+
+scene_option = mujoco.MjvOption()
+scene_option.geomgroup[2] = True
+scene_option.geomgroup[3] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = True
+
+frames = eval_env.render(
+    traj,
+    camera="track",
+    scene_option=scene_option,
+    width=640,
+    height=480,
+    modify_scene_fns=mod_fns,
+)
+media.show_video(frames, fps=fps, loop=False)
+
+#------------------------- In[34]: Cell type: markdown -------------------------
+# Notice that the above policy looks jittery and unlikely to transfer on the robot. The max power output is also quite high.
+# 
+# The sim-to-real deployment of the handstand policy was trained using a curriculum on the `energy_termination_threshold`, `energy` and `dof_acc`, which are config values that penalize high torques and high power output. Let's finetune the above policy with a decreased  `energy_termination_threshold`, as well as non-zero values for `energy` and `dof_acc` rewards to get a smoother policy.
+
+#------------------------- In[35]: Cell type: markdown -------------------------
+# ### Finetune the previous checkpoint
+
+#------------------------- In[36]: Cell type: code -------------------------
+env_cfg = registry.get_default_config(env_name)
+env_cfg.energy_termination_threshold = 400  # lower energy termination threshold
+env_cfg.reward_config.energy = -0.003  # non-zero negative `energy` reward
+env_cfg.reward_config.dof_acc = -2.5e-7  # non-zero negative `dof_acc` reward
+
+FINETUNE_PATH = epath.Path(ckpt_path)
+latest_ckpts = list(FINETUNE_PATH.glob("*"))
+latest_ckpts = [ckpt for ckpt in latest_ckpts if ckpt.is_dir()]
+latest_ckpts.sort(key=lambda x: int(x.name))
+latest_ckpt = latest_ckpts[-1]
+restore_checkpoint_path = latest_ckpt
+
+#------------------------- In[37]: Cell type: code -------------------------
+x_data, y_data, y_dataerr = [], [], []
+times = [datetime.now()]
+
+make_inference_fn, params, metrics = train_fn(
+    environment=registry.load(env_name, config=env_cfg),
+    eval_env=registry.load(env_name, config=env_cfg),
+    wrap_env_fn=wrapper.wrap_for_brax_training,
+    restore_checkpoint_path=restore_checkpoint_path,  # restore from the checkpoint!
+    seed=1,
+)
+print(f"time to jit: {times[1] - times[0]}")
+print(f"time to train: {times[-1] - times[1]}")
+
+#------------------------- In[38]: Cell type: code -------------------------
+#@title Rollout and Render Finetune Policy
+inference_fn = make_inference_fn(params, deterministic=True)
+jit_inference_fn = jax.jit(inference_fn)
+
+eval_env = registry.load(env_name, config=env_cfg)
+jit_reset = jax.jit(eval_env.reset)
+jit_step = jax.jit(eval_env.step)
+
+rng = jax.random.PRNGKey(12345)
+rollout = []
+rewards = []
+torso_height = []
+actions = []
+torques = []
+power = []
+qfrc_constraint = []
+qvels = []
+power1 = []
+power2 = []
+for _ in range(10):
+  rng, reset_rng = jax.random.split(rng)
+  state = jit_reset(reset_rng)
+  for i in range(env_cfg.episode_length // 2):
+    act_rng, rng = jax.random.split(rng)
+    ctrl, _ = jit_inference_fn(state.obs, act_rng)
+    actions.append(ctrl)
+    state = jit_step(state, ctrl)
+    rollout.append(state)
+    rewards.append(
+        {k[7:]: v for k, v in state.metrics.items() if k.startswith("reward/")}
+    )
+    torso_height.append(state.data.qpos[2])
+    torques.append(state.data.actuator_force)
+    qvel = state.data.qvel[6:]
+    power.append(jp.sum(jp.abs(qvel * state.data.actuator_force)))
+    qfrc_constraint.append(jp.linalg.norm(state.data.qfrc_constraint[6:]))
+    qvels.append(jp.max(jp.abs(qvel)))
+    frc = state.data.actuator_force
+    qvel = state.data.qvel[6:]
+    power1.append(jp.sum(frc * qvel))
+    power2.append(jp.sum(jp.abs(frc * qvel)))
+
+
+render_every = 2
+fps = 1.0 / eval_env.dt / render_every
+traj = rollout[::render_every]
+
+scene_option = mujoco.MjvOption()
+scene_option.geomgroup[2] = True
+scene_option.geomgroup[3] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = False
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
+
+frames = eval_env.render(
+    traj, camera="side", scene_option=scene_option, height=480, width=640
+)
+media.show_video(frames, fps=fps, loop=False)
+
+power = jp.array(power1)
+print(f"Max power: {jp.max(power)}")
+
+#------------------------- In[39]: Cell type: markdown -------------------------
+# The final policy should exhibit smoother behavior and have less power output! Feel free to finetune the policy some more using different reward terms to get the best behavior.
+
+
+
+--------------------------------------------------------------------------------------------
+---  END OF FILE: mujoco_playground/_src/locomotion/pupper/pupper_locomotion_test.ipynb  ---
+================================================================================
+

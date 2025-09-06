@@ -1,4 +1,4 @@
-#python test\dump_project.py -o core_logic.txt mujoco_playground\_src\locomotion\pupper\joystick.py mujoco_playground\_src\locomotion\pupper\joystickwithgun.py mujoco_playground\_src\locomotion\pupper\pupper_locomotion_test.ipynb
+#python dump_project.py -o core_logic.txt joystick.py joystickwithgun.py pupper_locomotion_test.ipynb
 
 # test/dump_project.py
 import os

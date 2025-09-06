@@ -63,7 +63,7 @@ def default_config() -> config_dict.ConfigDict:
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
-              tracking_lin_vel=2.5, # 1.0
+              tracking_lin_vel=3.0, # 1.0
               tracking_ang_vel=1.5, # 0.5
 
               # +++ 新增獎勵項: 俯仰角追蹤 +++
